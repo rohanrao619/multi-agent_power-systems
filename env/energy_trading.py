@@ -2,15 +2,19 @@ import json
 import numpy as np
 
 from gymnasium import spaces
-from ray.rllib.env.multi_agent_env import MultiAgentEnv
+from gymnasium.utils import seeding
+
+from pettingzoo import ParallelEnv
 
 # Basic environment, inspired from https://doi.org/10.24963/ijcai.2021/401
 ## Environment config items: dt, eps_len, es_P, es_capacity, es_efficiency, ToU, FiT, data_path
 
-class EnergyTradingEnv(MultiAgentEnv):
-    def __init__(self, config):
+class EnergyTradingEnv(ParallelEnv):
+    
+    def __init__(self, config, render_mode=None):
 
-        super().__init__()
+        # Zoo requirement
+        self.render_mode = render_mode
 
         # Decision every hour, episode runs over a day
         self.eps_len = config.get("eps_len", 24)
@@ -23,7 +27,7 @@ class EnergyTradingEnv(MultiAgentEnv):
         self._setup_agents()
 
         # 1 year of data
-        self.n_days = int(len(self.data[self.aid_mapping[self.agents[0]]]["pv"])/24)
+        self.n_days = int(len(self.data[self.aid_mapping[self.possible_agents[0]]]["pv"])/24)
 
         # Battery (ES) Config
         self.es_P = config.get("es_P", 2)  # Power rating of the battery
@@ -38,15 +42,6 @@ class EnergyTradingEnv(MultiAgentEnv):
         
         self.FiT = config.get("FiT", 0.04)  # Feed-in Tariff
         
-        # Observation Space: [load, soc, ToU, FiT]
-        self.observation_spaces = {aid: spaces.Box(low=0, high=1024, shape=(4,), dtype=np.float32) for aid in self.possible_agents}
-
-        # Action Space: [price and soc control]
-        self.action_spaces = {aid: spaces.Box(low=np.array([0, -1]), high=np.array([1, 1]), shape=(2,), dtype=np.float32) for aid in self.possible_agents}
-        
-        self.state = {}
-        
-        self.reset()
 
     def _setup_agents(self):
 
@@ -65,12 +60,36 @@ class EnergyTradingEnv(MultiAgentEnv):
                 self.aid_mapping[f"consumer_{consumer_idx}"] = aid
                 consumer_idx += 1
         
-        self.agents = self.possible_agents = sorted(self.aid_mapping.keys())
+        self.possible_agents = sorted(self.aid_mapping.keys())
+
+    
+    def observation_space(self, agent):
+        
+        # Same for all
+        # Observation Space: [load, soc, ToU, FiT]
+        return spaces.Box(low=0, high=1024, shape=(4,), dtype=np.float32)
+    
+    def action_space(self, agent):
+        
+        # Same for all
+        # Action Space: [price and soc control]
+        return spaces.Box(low=np.array([0, -1]), high=np.array([1, 1]), shape=(2,), dtype=np.float32)
+    
+
+    # Zoo requirement
+    def render(self):
+        pass
+
 
     def reset(self, seed=None, options=None):
+
+        if seed is not None:
+            self.np_random, self.np_random_seed = seeding.np_random(seed)
         
         self.timestep = 0
         self.day = np.random.randint(0, self.n_days)
+
+        self.agents = self.possible_agents.copy()
 
         self.state = {
             aid: {
@@ -81,8 +100,11 @@ class EnergyTradingEnv(MultiAgentEnv):
         }
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
-        return obs, {}
+        infos = {aid: {} for aid in self.agents}
 
+        return obs, infos
+
+    
     def step(self, action_dict):
         
         # P2P quotes
@@ -140,13 +162,11 @@ class EnergyTradingEnv(MultiAgentEnv):
         # Finishing Touches
         obs = {aid: self._get_obs(aid) if not done else np.zeros((4,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
         terminations = {aid: False for aid in self.agents}
-        truncations = {aid: False for aid in self.agents}
+        truncations = {aid: done for aid in self.agents}
         infos = {aid: {} for aid in self.agents}
-
-        terminations["__all__"] = done
-        truncations["__all__"] = False
         
         return obs, rewards, terminations, truncations, infos
+    
     
     def _get_obs(self, aid):
 
@@ -174,10 +194,12 @@ class EnergyTradingEnv(MultiAgentEnv):
 
         return load
     
+    
     def _gaussian_init(self, mean, bucket, v_min, v_max):
 
         # Gaussian (99.7%) on the bucket [mean-bucket/2, mean + bucket/2], clipped appropriately
         return np.clip(np.random.normal(mean, bucket/6), max(v_min, mean - bucket/2), min(v_max, mean + bucket/2))
+    
     
     def _run_double_auction(self, quotes):
        

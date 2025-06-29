@@ -9,9 +9,10 @@ from typing import Callable, Dict, List, Optional
 from benchmarl.environments.common import Task, TaskClass
 from benchmarl.utils import DEVICE_TYPING
 
+import torch
 from tensordict import TensorDictBase
 
-from torchrl.data import CompositeSpec
+from torchrl.data import CompositeSpec, Unbounded, Composite
 from torchrl.envs import EnvBase
 from torchrl.envs.libs.pettingzoo import PettingZooWrapper
 from torchrl.envs.utils import MarlGroupMapType
@@ -39,6 +40,7 @@ class EnergyTradingClass(TaskClass):
     ) -> Callable[[], EnvBase]:    
         return lambda: PettingZooWrapper(
             env=EnergyTradingEnv(self.config),
+            return_state=True,
             group_map=MarlGroupMapType.ONE_GROUP_PER_AGENT,
             use_mask=False,
             categorical_actions=False,
@@ -79,7 +81,16 @@ class EnergyTradingClass(TaskClass):
     def state_spec(self, env: EnvBase) -> Optional[CompositeSpec]:
         # A spec for the state.
         # If provided, must be a CompositeSpec with one "state" entry
-        return None
+
+        # Assuming MarlGroupMapType.ONE_GROUP_PER_AGENT
+        n_agents = len(env.group_map)
+
+        specs = Composite(
+            state = Unbounded(shape=(n_agents, (n_agents - 1)*2),
+                          dtype=torch.float32,
+                          device=env.device))
+
+        return specs
 
     def action_mask_spec(self, env: EnvBase) -> Optional[CompositeSpec]:
         # A spec for the action mask.

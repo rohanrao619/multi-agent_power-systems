@@ -15,6 +15,7 @@ from .mappo import Mappo, MappoConfig
 from .masac import Masac, MasacConfig
 from .qmix import Qmix, QmixConfig
 from .vdn import Vdn, VdnConfig
+from .da_maddpg import DA_Maddpg, DA_MaddpgConfig
 
 classes = [
     "Iddpg",
@@ -35,6 +36,8 @@ classes = [
     "QmixConfig",
     "Vdn",
     "VdnConfig",
+    "DA_Maddpg",
+    "DA_MaddpgConfig",
 ]
 
 # A registry mapping "algoname" to its config dataclass
@@ -49,4 +52,5 @@ algorithm_config_registry = {
     "qmix": QmixConfig,
     "vdn": VdnConfig,
     "iql": IqlConfig,
+    "da_maddpg": DA_MaddpgConfig,
 }

@@ -91,13 +91,16 @@ class EnergyTradingEnv(ParallelEnv):
 
         self.agents = self.possible_agents.copy()
 
-        self.state = {
+        self.state_vars = {
             aid: {
                 "soc": self._gaussian_init(self.es_capacity[0] + (self.es_capacity[1] - self.es_capacity[0]) / 2,
                                            self.es_capacity[1] - self.es_capacity[0],
                                            self.es_capacity[0], self.es_capacity[1]),
             } for aid in self.agents
         }
+
+        # Initialize orderbook with zero quotes
+        self.orderbook = {aid: (0, 0) for aid in self.agents}  # (quantity, price)
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         infos = {aid: {} for aid in self.agents}
@@ -116,7 +119,7 @@ class EnergyTradingEnv(ParallelEnv):
             price, soc_control = action
             price = self.FiT + price * (self.ToU[self.timestep] - self.FiT)  # Scale Price
 
-            soc = self.state[aid]["soc"]
+            soc = self.state_vars[aid]["soc"]
             load = self._get_load(aid)
 
             if soc_control >= 0:
@@ -125,7 +128,7 @@ class EnergyTradingEnv(ParallelEnv):
                 charge_P = min(self.es_P * soc_control,
                                (self.es_capacity[1] - soc)/self.es_efficiency[0]*self.dt)
                 
-                self.state[aid]["soc"] = soc + charge_P * self.dt * self.es_efficiency[0]
+                self.state_vars[aid]["soc"] = soc + charge_P * self.dt * self.es_efficiency[0]
                 qnt = load + charge_P * self.dt
 
             else:
@@ -134,11 +137,14 @@ class EnergyTradingEnv(ParallelEnv):
                 discharge_P = min(self.es_P * soc_control,
                                   (self.es_capacity[0] - soc)*self.es_efficiency[1]/self.dt)
                 
-                self.state[aid]["soc"] = soc + (discharge_P * self.dt)/self.es_efficiency[1]
+                self.state_vars[aid]["soc"] = soc + (discharge_P * self.dt)/self.es_efficiency[1]
                 qnt = load + discharge_P * self.dt
 
             # Prepare trade action
             quotes[aid] = (qnt, price)
+
+        # State Update
+        self.orderbook = quotes
         
         # Run the double auction
         matches, trades, open_book = self._run_double_auction(quotes)
@@ -167,10 +173,21 @@ class EnergyTradingEnv(ParallelEnv):
         
         return obs, rewards, terminations, truncations, infos
     
+    # Centralised training
+    def state(self):
+
+        state_vals = []
+
+        for aid in sorted(self.agents):
+            state_vals.append([self.orderbook[k] for k in sorted(self.agents) if k != aid])
+
+        state_vals = np.array(state_vals, dtype=np.float32).reshape(len(self.agents), -1)
+        
+        return state_vals
     
     def _get_obs(self, aid):
 
-        soc = self.state[aid]["soc"]
+        soc = self.state_vars[aid]["soc"]
 
         # Should be forecasted? How do we know beforehand?
         load = self._get_load(aid)

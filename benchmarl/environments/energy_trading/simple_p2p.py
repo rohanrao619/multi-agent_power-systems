@@ -17,3 +17,5 @@ class TaskConfig:
     es_efficiency: list[float] = MISSING
     ToU: list[float] = MISSING
     FiT: float = MISSING
+    use_contracts: bool = MISSING
+    max_contract_qnt: float = MISSING

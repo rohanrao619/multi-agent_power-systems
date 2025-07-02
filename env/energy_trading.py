@@ -7,7 +7,7 @@ from gymnasium.utils import seeding
 from pettingzoo import ParallelEnv
 
 # Basic environment, inspired from https://doi.org/10.24963/ijcai.2021/401
-## Environment config items: dt, eps_len, es_P, es_capacity, es_efficiency, ToU, FiT, data_path
+## Environment config items: dt, eps_len, es_P, es_capacity, es_efficiency, ToU, FiT, data_path, use_contracts, max_contract_qnt
 
 class EnergyTradingEnv(ParallelEnv):
     
@@ -34,14 +34,22 @@ class EnergyTradingEnv(ParallelEnv):
         self.es_capacity = config.get("es_capacity", [2, 10]) # [min soc, max soc]
         self.es_efficiency = config.get("es_efficiency", [0.95,0.95])  # [charge efficiency, discharge efficiency]
 
-        # Grid Config, Time of Use and FiT Prices
-        self.ToU = config.get("ToU", [0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, # 12 AM - 8 AM
-                                      0.13, 0.13, 0.13, 0.13, 0.13, 0.13, 0.13, 0.13, # 9 AM - 4 PM
-                                      0.18, 0.18, 0.18, 0.18, # 5 PM - 8 PM
-                                      0.08, 0.08, 0.08]) # 9 PM - 11 PM
+        # Grid Config, Time of Use
+        self.ToU = config.get("ToU", [0.08, # 9 PM - 8 AM (Overnight)
+                                      0.13, # 9 AM - 4 PM (Off-Peak)
+                                      0.18]) # 5 PM - 8 PM (Peak)
         
-        self.FiT = config.get("FiT", 0.04)  # Feed-in Tariff
-        
+        self.FiT = config.get("FiT", 0.04)  # Grid Config, Feed-in Tariff
+
+        # Timestep (hours) to ToU period
+        self.timemap = [0, 0, 0, 0, 0, 0, 0, 0, 0, # 12 AM - 8 AM
+                        1, 1, 1, 1, 1, 1, 1, 1, # 9 AM - 4 PM
+                        2, 2, 2, 2, # 5 PM - 8 PM
+                        0, 0, 0] # 9 PM - 11 PM
+
+        # Contracts
+        self.use_contracts = config.get("use_contracts", False) # Bool
+        self.max_contract_qnt = config.get("max_contract_qnt", 2.0) # Max contract quantity
 
     def _setup_agents(self):
 
@@ -62,12 +70,19 @@ class EnergyTradingEnv(ParallelEnv):
         
         self.possible_agents = sorted(self.aid_mapping.keys())
 
+    def _timestep_to_ToU_period(self, timestep):
+        return self.timemap[timestep % len(self.timemap)]
+
     
     def observation_space(self, agent):
         
         # Same for all
-        # Observation Space: [load, soc, ToU, FiT]
-        return spaces.Box(low=0, high=1024, shape=(4,), dtype=np.float32)
+        if not self.use_contracts:
+            # Observation Space: [load, soc, ToU, FiT]
+            return spaces.Box(low=0, high=1024, shape=(4,), dtype=np.float32)
+        else:
+            # Add contract: [commited qnt and price]
+            return spaces.Box(low=0, high=1024, shape=(6,), dtype=np.float32)
     
     def action_space(self, agent):
         
@@ -101,6 +116,31 @@ class EnergyTradingEnv(ParallelEnv):
 
         # Initialize orderbook with zero quotes
         self.orderbook = {aid: (0, 0) for aid in self.agents}  # (quantity, price)
+
+        if self.use_contracts:
+            
+            if options is not None and "contract_bids" in options:
+                # Use provided bids
+                contract_bids = options["contract_bids"]
+            else:
+                contract_bids = list(dict() for _ in range(len(self.ToU)))
+                for aid in self.agents:
+                    for period in range(len(self.ToU)):
+                        
+                        # Randomly generate bids (better exploration possible?)
+                        price = self.FiT + np.random.uniform(0, 1) * (self.ToU[period] - self.FiT)
+                        qnt = np.random.uniform(-self.max_contract_qnt, self.max_contract_qnt)
+                        
+                        contract_bids[period][aid] = (qnt, price)
+
+            # Sign contracts using Double Auction, Just an idea for now
+            self.contracts = list(dict() for _ in range(len(self.ToU)))
+            for period in range(len(self.ToU)):
+                matches, trades, open_book = self._run_double_auction(contract_bids[period])
+                self.contracts[period] = {"matches": matches,
+                                          "trades": trades,
+                                          "open_book": open_book,
+                                          "bids": contract_bids[period]}
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         infos = {aid: {} for aid in self.agents}
@@ -117,16 +157,20 @@ class EnergyTradingEnv(ParallelEnv):
         for aid, action in action_dict.items():
 
             price, soc_control = action
-            price = self.FiT + price * (self.ToU[self.timestep] - self.FiT)  # Scale Price
+            price = self.FiT + price * (self.ToU[self._timestep_to_ToU_period(self.timestep)] - self.FiT)  # Scale Price
 
             soc = self.state_vars[aid]["soc"]
             load = self._get_load(aid)
+
+            # Chip in contracts
+            if self.use_contracts:
+                load -= self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]["qnt"]
 
             if soc_control >= 0:
                 
                 # Charging
                 charge_P = min(self.es_P * soc_control,
-                               (self.es_capacity[1] - soc)/self.es_efficiency[0]*self.dt)
+                               (self.es_capacity[1] - soc)/(self.es_efficiency[0]*self.dt))
                 
                 self.state_vars[aid]["soc"] = soc + charge_P * self.dt * self.es_efficiency[0]
                 qnt = load + charge_P * self.dt
@@ -135,7 +179,7 @@ class EnergyTradingEnv(ParallelEnv):
 
                 # Discharging
                 discharge_P = min(self.es_P * soc_control,
-                                  (self.es_capacity[0] - soc)*self.es_efficiency[1]/self.dt)
+                                  ((self.es_capacity[0] - soc)*self.es_efficiency[1])/self.dt)
                 
                 self.state_vars[aid]["soc"] = soc + (discharge_P * self.dt)/self.es_efficiency[1]
                 qnt = load + discharge_P * self.dt
@@ -150,23 +194,30 @@ class EnergyTradingEnv(ParallelEnv):
         matches, trades, open_book = self._run_double_auction(quotes)
 
         # Costs/Earnings from successful trades
-        rewards = {aid: -(trades[aid]["price"] * trades[aid]["quantity"]) for aid in self.agents}
+        rewards = {aid: -(trades[aid]["price"] * trades[aid]["qnt"]) for aid in self.agents}
 
         # Settle unmet quotes with ToU and FiT
         for buyer in open_book["buyers"]:
             aid, price, qnt = buyer
-            rewards[aid] -= qnt * self.ToU[self.timestep]
+            rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
 
         for seller in open_book["sellers"]:
             aid, price, qnt = seller
             rewards[aid] += qnt * self.FiT
+
+        # Settle contracts
+        if self.use_contracts:
+            for aid in self.agents:
+                contract_trade = self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]
+                rewards[aid] -= (contract_trade["price"] * contract_trade["qnt"])
         
         # Time Controls
         self.timestep += 1
         done = (self.timestep >= self.eps_len)
 
         # Finishing Touches
-        obs = {aid: self._get_obs(aid) if not done else np.zeros((4,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
+        obs_len = 6 if self.use_contracts else 4
+        obs = {aid: self._get_obs(aid) if not done else np.zeros((obs_len,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
         terminations = {aid: False for aid in self.agents}
         truncations = {aid: done for aid in self.agents}
         infos = {aid: {} for aid in self.agents}
@@ -192,11 +243,17 @@ class EnergyTradingEnv(ParallelEnv):
         # Should be forecasted? How do we know beforehand?
         load = self._get_load(aid)
 
-        return np.array([load,
-                         soc,
-                         self.ToU[self.timestep],
-                         self.FiT],
-                         dtype=np.float32)
+        obs = [load,
+               soc,
+               self.ToU[self._timestep_to_ToU_period(self.timestep)],
+               self.FiT]
+        
+        if self.use_contracts:
+            contract_trade = self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]
+            obs.append(contract_trade["qnt"])
+            obs.append(contract_trade["price"])
+
+        return np.array(obs, dtype=np.float32)
     
     def _get_load(self, aid):
 
@@ -226,11 +283,11 @@ class EnergyTradingEnv(ParallelEnv):
         # Parse actions
         for aid, action in quotes.items():
             
-            quantity, price = action
-            if quantity > 0:
-                buyers.append((aid, price, quantity))  # buy quantity
-            elif quantity < 0:
-                sellers.append((aid, price, -quantity))  # sell quantity (as positive)
+            qnt, price = action
+            if qnt > 0:
+                buyers.append((aid, price, qnt))  # buy quantity
+            elif qnt < 0:
+                sellers.append((aid, price, -qnt))  # sell quantity (as positive)
             # quantity == 0 → no trade, ignored
 
         # Sort by willingness: buyers (high price first), sellers (low price first)
@@ -238,34 +295,34 @@ class EnergyTradingEnv(ParallelEnv):
         sellers.sort(key=lambda x: x[1])
 
         matches = []
-        trades = {aid: {"quantity": 0, "price": 0} for aid in self.agents}
+        trades = {aid: {"qnt": 0, "price": 0} for aid in self.agents}
 
         buyer_idx = 0
         seller_idx = 0
 
         while buyer_idx < len(buyers) and seller_idx < len(sellers):
-            buyer_id, bid_price, bid_qty = buyers[buyer_idx]
-            seller_id, ask_price, ask_qty = sellers[seller_idx]
+            buyer_id, bid_price, bid_qnt = buyers[buyer_idx]
+            seller_id, ask_price, ask_qnt = sellers[seller_idx]
 
             if bid_price >= ask_price:
-                trade_qty = min(bid_qty, ask_qty)
+                trade_qnt = min(bid_qnt, ask_qnt)
                 clearing_price = (bid_price + ask_price) / 2.0
 
                 matches.append({
                     "buyer": buyer_id,
                     "seller": seller_id,
                     "price": clearing_price,
-                    "amount": trade_qty,
+                    "qnt": trade_qnt,
                 })
 
-                trades[buyer_id]["price"] = (trades[buyer_id]["price"] * trades[buyer_id]["quantity"] + clearing_price * trade_qty) / (trades[buyer_id]["quantity"] + trade_qty)
-                trades[buyer_id]["quantity"] += trade_qty
+                trades[buyer_id]["price"] = (trades[buyer_id]["price"] * trades[buyer_id]["qnt"] + clearing_price * trade_qnt) / (trades[buyer_id]["qnt"] + trade_qnt)
+                trades[buyer_id]["qnt"] += trade_qnt
 
-                trades[seller_id]["price"] = (trades[seller_id]["price"] * abs(trades[seller_id]["quantity"]) + clearing_price * trade_qty) / (abs(trades[seller_id]["quantity"]) + trade_qty)
-                trades[seller_id]["quantity"] -= trade_qty
+                trades[seller_id]["price"] = (trades[seller_id]["price"] * abs(trades[seller_id]["qnt"]) + clearing_price * trade_qnt) / (abs(trades[seller_id]["qnt"]) + trade_qnt)
+                trades[seller_id]["qnt"] -= trade_qnt
 
-                buyers[buyer_idx] = (buyer_id, bid_price, bid_qty - trade_qty)
-                sellers[seller_idx] = (seller_id, ask_price, ask_qty - trade_qty)
+                buyers[buyer_idx] = (buyer_id, bid_price, bid_qnt - trade_qnt)
+                sellers[seller_idx] = (seller_id, ask_price, ask_qnt - trade_qnt)
 
                 if buyers[buyer_idx][2] == 0:
                     buyer_idx += 1

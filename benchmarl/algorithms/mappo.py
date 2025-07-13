@@ -126,6 +126,9 @@ class Mappo(Algorithm):
             {group: self.observation_spec[group].clone().to(self.device)}
         )
 
+        # Remove "info" from the input spec
+        del actor_input_spec[group, "info"]
+
         actor_output_spec = Composite(
             {
                 group: Composite(
@@ -294,6 +297,9 @@ class Mappo(Algorithm):
             critic_input_spec = Composite(
                 {group: self.observation_spec[group].clone().to(self.device)}
             )
+        
+            # Remove "info" from the input spec
+            del critic_input_spec[group, "info"]
 
         value_module = self.critic_model_config.get_model(
             input_spec=critic_input_spec,

@@ -111,6 +111,7 @@ class EnergyTradingEnv(ParallelEnv):
                 "soc": self._gaussian_init(self.es_capacity[0] + (self.es_capacity[1] - self.es_capacity[0]) / 2,
                                            self.es_capacity[1] - self.es_capacity[0],
                                            self.es_capacity[0], self.es_capacity[1]),
+                "grid_reliance": 0.0
             } for aid in self.agents
         }
 
@@ -143,7 +144,7 @@ class EnergyTradingEnv(ParallelEnv):
                                           "bids": contract_bids[period]}
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
-        infos = {aid: {} for aid in self.agents}
+        infos = {aid: {"grid_reliance": 0.0} for aid in self.agents}
 
         return obs, infos
 
@@ -200,10 +201,12 @@ class EnergyTradingEnv(ParallelEnv):
         for buyer in open_book["buyers"]:
             aid, price, qnt = buyer
             rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
+            self.state_vars[aid]["grid_reliance"] += qnt
 
         for seller in open_book["sellers"]:
             aid, price, qnt = seller
             rewards[aid] += qnt * self.FiT
+            self.state_vars[aid]["grid_reliance"] += qnt
 
         # Settle contracts
         if self.use_contracts:
@@ -220,7 +223,7 @@ class EnergyTradingEnv(ParallelEnv):
         obs = {aid: self._get_obs(aid) if not done else np.zeros((obs_len,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
         terminations = {aid: False for aid in self.agents}
         truncations = {aid: done for aid in self.agents}
-        infos = {aid: {} for aid in self.agents}
+        infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"]} for aid in self.agents}
         
         return obs, rewards, terminations, truncations, infos
     

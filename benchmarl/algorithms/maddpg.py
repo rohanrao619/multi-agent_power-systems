@@ -35,6 +35,7 @@ class Maddpg(Algorithm):
         loss_function: str,
         delay_value: bool,
         use_tanh_mapping: bool,
+        use_double_auction_critic: bool,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -43,6 +44,9 @@ class Maddpg(Algorithm):
         self.delay_value = delay_value
         self.loss_function = loss_function
         self.use_tanh_mapping = use_tanh_mapping
+
+        # customization
+        self.use_double_auction_critic = use_double_auction_critic
 
     #############################
     # Overridden abstract methods
@@ -89,9 +93,14 @@ class Maddpg(Algorithm):
         if continuous:
             n_agents = len(self.group_map[group])
             logits_shape = list(self.action_spec[group, "action"].shape)
+            
             actor_input_spec = Composite(
                 {group: self.observation_spec[group].clone().to(self.device)}
             )
+
+            # Remove "info" from the input spec
+            del actor_input_spec[group, "info"]
+            
             actor_output_spec = Composite(
                 {
                     group: Composite(
@@ -202,21 +211,65 @@ class Maddpg(Algorithm):
             )
 
         if self.state_spec is not None:
-            modules.append(
-                TensorDictModule(
-                    lambda action: action.reshape(*action.shape[:-2], -1),
-                    in_keys=[(group, "action")],
-                    out_keys=["global_action"],
-                )
-            )
 
-            critic_input_spec = self.state_spec.clone().update(
-                {
-                    "global_action": Unbounded(
-                        shape=(self.action_spec[group, "action"].shape[-1] * n_agents,)
+            # Vanilla version, unaltered
+            if not self.use_double_auction_critic:
+                
+                modules.append(
+                    TensorDictModule(
+                        lambda action: action.reshape(*action.shape[:-2], -1),
+                        in_keys=[(group, "action")],
+                        out_keys=["global_action"],
                     )
-                }
-            )
+                )
+
+                critic_input_spec = self.state_spec.clone().update(
+                    {
+                        "global_action": Unbounded(
+                            shape=(self.action_spec[group, "action"].shape[-1] * n_agents,)
+                        )
+                    }
+                )
+
+            # Double auction version, assumes ONE_GROUP_PER_AGENT
+            else:
+
+                total_agents = len(self.group_map.keys())
+                agent_idx = sorted(self.group_map.keys()).index(group)
+                
+                # Local action, flattened
+                modules.append(
+                    TensorDictModule(
+                        lambda action: action.reshape(*action.shape[:-2], -1),
+                        in_keys=[(group, "action")],
+                        out_keys=["local_action"],
+                    )
+                )
+
+                # Local observation, flattened
+                modules.append(
+                    TensorDictModule(
+                        lambda obs: obs.reshape(*obs.shape[:-2], -1),
+                        in_keys=[(group, "observation")],
+                        out_keys=["local_obs"],
+                    )
+                )
+                
+                # Filter agent's state
+                modules.append(
+                    TensorDictModule(
+                        lambda state: state[:,agent_idx,:].reshape(*state.shape[:-2], -1),
+                        in_keys=["state"],
+                        out_keys=["agent_state"],
+                    )
+                )
+
+                critic_input_spec = Composite(
+                    local_action = Unbounded(shape=(self.action_spec[group, "action"].shape[-1] * n_agents,)),
+                    local_obs = Unbounded(shape=(self.observation_spec[group, "observation"].shape[-1] * n_agents,)),
+                    agent_state = Unbounded(shape=((total_agents - 1)*2,))
+                )
+
             input_has_agent_dim = False
 
         else:
@@ -227,6 +280,10 @@ class Maddpg(Algorithm):
                     .update(self.action_spec[group])
                 }
             )
+
+            # Remove "info" from the input spec
+            del critic_input_spec[group, "info"]
+            
             input_has_agent_dim = True
 
         modules.append(
@@ -262,10 +319,12 @@ class MaddpgConfig(AlgorithmConfig):
     """Configuration dataclass for :class:`~benchmarl.algorithms.Maddpg`."""
 
     share_param_critic: bool = MISSING
-
     loss_function: str = MISSING
     delay_value: bool = MISSING
     use_tanh_mapping: bool = MISSING
+
+    # customization
+    use_double_auction_critic: bool = MISSING
 
     @staticmethod
     def associated_class() -> Type[Algorithm]:

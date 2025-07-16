@@ -97,9 +97,6 @@ class Maddpg(Algorithm):
             actor_input_spec = Composite(
                 {group: self.observation_spec[group].clone().to(self.device)}
             )
-
-            # Remove "info" from the input spec
-            del actor_input_spec[group, "info"]
             
             actor_output_spec = Composite(
                 {
@@ -280,9 +277,6 @@ class Maddpg(Algorithm):
                     .update(self.action_spec[group])
                 }
             )
-
-            # Remove "info" from the input spec
-            del critic_input_spec[group, "info"]
             
             input_has_agent_dim = True
 

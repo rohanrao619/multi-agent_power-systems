@@ -71,7 +71,16 @@ class EnergyTradingClass(TaskClass):
     def observation_spec(self, env: EnvBase) -> CompositeSpec:
         # A spec for the observation.
         # Must be a CompositeSpec with one (group_name, observation_key) entry per group.
-        return env.full_observation_spec
+        
+        observation_spec = env.observation_spec.clone()
+        
+        for group in self.group_map(env):
+            group_obs_spec = observation_spec[group]
+            for key in list(group_obs_spec.keys()):
+                if key != "observation":
+                    del group_obs_spec[key]
+        
+        return observation_spec
 
     def action_spec(self, env: EnvBase) -> CompositeSpec:
         # A spec for the action.

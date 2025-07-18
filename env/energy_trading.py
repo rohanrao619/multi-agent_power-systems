@@ -102,7 +102,7 @@ class EnergyTradingEnv(ParallelEnv):
             self.np_random, self.np_random_seed = seeding.np_random(seed)
         
         self.timestep = 0
-        self.day = np.random.randint(0, self.n_days)
+        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days)
 
         self.agents = self.possible_agents.copy()
 
@@ -113,7 +113,7 @@ class EnergyTradingEnv(ParallelEnv):
                                            self.es_capacity[0], self.es_capacity[1]),
                 "grid_reliance": 0.0
             } for aid in self.agents
-        }
+        } if (options is None or "state_vars" not in options) else options["state_vars"]
 
         # Initialize orderbook with zero quotes
         self.orderbook = {aid: (0, 0) for aid in self.agents}  # (quantity, price)

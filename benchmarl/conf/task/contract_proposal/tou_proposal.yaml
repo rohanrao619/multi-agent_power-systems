@@ -1,9 +1,9 @@
 defaults:
-  - energy_trading_simple_p2p_config
+  - contract_proposal_tou_proposal_config
   - _self_
 
 data_path: "data/ausgrid/ausgrid.json"
-base_exp_path: "results/mappo_simple_p2p_mlp__9dad6ea7_25_07_18-20_33_15/checkpoints/checkpoint_32768.pt"
+base_exp_path: null
 dt: 1
 eps_len: 24
 contract_eps_len: 7

@@ -39,13 +39,13 @@ class ContractProposalEnv(ParallelEnv):
         
         # Same for all
         # Observation Space: [soc, FiT] + [ToU, load] x ToU periods
-        return spaces.Box(low=0, high=1024, shape=(2+2*len(self.trading_env.ToU),), dtype=np.float32)
+        return spaces.Box(low=0, high=128, shape=(2+2*len(self.trading_env.ToU),), dtype=np.float32)
     
     def action_space(self, agent):
         
         # Same for all
         # Action Space: [commit qnt and price] X ToU periods
-        return spaces.Box(low=np.array([0, 0, 0, -1, -1, -1]), high=np.ones(shape=(6,)), shape=(2*len(self.trading_env.ToU),), dtype=np.float32)
+        return spaces.Box(low=np.array([-1, -1, -1, 0, 0, 0]), high=np.ones(shape=(6,)), shape=(2*len(self.trading_env.ToU),), dtype=np.float32)
 
     # Zoo requirement
     def render(self):
@@ -66,12 +66,16 @@ class ContractProposalEnv(ParallelEnv):
                 "soc": self.trading_env._gaussian_init(self.trading_env.es_capacity[0] + (self.trading_env.es_capacity[1] - self.trading_env.es_capacity[0]) / 2,
                                            self.trading_env.es_capacity[1] - self.trading_env.es_capacity[0],
                                            self.trading_env.es_capacity[0], self.trading_env.es_capacity[1]),
-                "grid_reliance": 0.0
+                "grid_reliance": 0.0,
+                "p2p_participation": 0.0,
+                "contracted_qnt": 0.0
             } for aid in self.agents
         }
 
         obs = {aid: self._get_obs(aid) for aid in self.agents}
-        infos = {aid: {"grid_reliance": 0.0} for aid in self.agents}
+        infos = {aid: {"grid_reliance": 0.0,
+                       "p2p_participation": 0.0,
+                       "contracted_qnt": 0.0} for aid in self.agents}
 
         return obs, infos
     
@@ -148,6 +152,8 @@ class ContractProposalEnv(ParallelEnv):
         for aid in self.agents:
             self.state_vars[aid]["soc"] = self.trading_env.state_vars[aid]["soc"]
             self.state_vars[aid]["grid_reliance"] = self.trading_env.state_vars[aid]["grid_reliance"]
+            self.state_vars[aid]["p2p_participation"] = self.trading_env.state_vars[aid]["p2p_participation"]
+            self.state_vars[aid]["contracted_qnt"] = self.trading_env.state_vars[aid]["contracted_qnt"]
         
         # Time Controls
         self.timestep += 1
@@ -157,6 +163,8 @@ class ContractProposalEnv(ParallelEnv):
         obs = {aid: self._get_obs(aid) if not done else np.zeros((8,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
         terminations = {aid: False for aid in self.agents}
         truncations = {aid: done for aid in self.agents}
-        infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"]} for aid in self.agents}
+        infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"],
+                       "p2p_participation": self.state_vars[aid]["p2p_participation"],
+                       "contracted_qnt": self.state_vars[aid]["contracted_qnt"]} for aid in self.agents}
         
         return obs, tot_rewards, terminations, truncations, infos

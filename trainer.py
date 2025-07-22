@@ -8,11 +8,12 @@ from benchmarl.models.mlp import MlpConfig
 
 if __name__ == "__main__":
 
-    # # Loads from "benchmarl/conf/task/energy_trading/simple_p2p.yaml"
-    # task = EnergyTradingTask.SIMPLE_P2P.get_from_yaml()
+    # Loads from "benchmarl/conf/task/energy_trading/simple_p2p.yaml"
+    task = EnergyTradingTask.SIMPLE_P2P.get_from_yaml()
 
-    # Loads from "benchmarl/conf/task/contract_proposal/tou_proposal.yaml"
-    task = ContractProposalTask.TOU_PROPOSAL.get_from_yaml()
+    # # Loads from "benchmarl/conf/task/contract_proposal/tou_proposal.yaml"
+    # task = ContractProposalTask.TOU_PROPOSAL.get_from_yaml()
+    # task.config["base_exp_path"] = "results/mappo_simple_p2p_mlp__2a78d661_25_07_22-18_43_51/checkpoints/checkpoint_32768.pt"
 
     # Modify as needed
     algorithm_config = MappoConfig.get_from_yaml()
@@ -41,7 +42,8 @@ if __name__ == "__main__":
 
     # Task Config
     task.config["use_single_group"] = True
-    task.config["use_contracts"] = True
+    task.config["use_contracts"] = False
+    task.config["eps_len"] = 168
 
     experiment = Experiment(
         task=task,

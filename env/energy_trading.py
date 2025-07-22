@@ -26,7 +26,7 @@ class EnergyTradingEnv(ParallelEnv):
         # Setup Agents, use the agent mapping later to access data
         self._setup_agents()
 
-        # 1 year of data
+        # 3 year of data
         self.n_days = int(len(self.data[self.aid_mapping[self.possible_agents[0]]]["pv"])/24)
 
         # Battery (ES) Config
@@ -79,10 +79,10 @@ class EnergyTradingEnv(ParallelEnv):
         # Same for all
         if not self.use_contracts:
             # Observation Space: [load, soc, ToU, FiT]
-            return spaces.Box(low=0, high=1024, shape=(4,), dtype=np.float32)
+            return spaces.Box(low=0, high=128, shape=(4,), dtype=np.float32)
         else:
             # Add contract: [commited qnt and price]
-            return spaces.Box(low=0, high=1024, shape=(6,), dtype=np.float32)
+            return spaces.Box(low=0, high=128, shape=(6,), dtype=np.float32)
     
     def action_space(self, agent):
         
@@ -102,7 +102,7 @@ class EnergyTradingEnv(ParallelEnv):
             self.np_random, self.np_random_seed = seeding.np_random(seed)
         
         self.timestep = 0
-        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days)
+        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days-7)
 
         self.agents = self.possible_agents.copy()
 
@@ -111,7 +111,9 @@ class EnergyTradingEnv(ParallelEnv):
                 "soc": self._gaussian_init(self.es_capacity[0] + (self.es_capacity[1] - self.es_capacity[0]) / 2,
                                            self.es_capacity[1] - self.es_capacity[0],
                                            self.es_capacity[0], self.es_capacity[1]),
-                "grid_reliance": 0.0
+                "grid_reliance": 0.0,
+                "p2p_participation": 0.0,
+                "contracted_qnt": 0.0
             } for aid in self.agents
         } if (options is None or "state_vars" not in options) else options["state_vars"]
 
@@ -144,7 +146,9 @@ class EnergyTradingEnv(ParallelEnv):
                                           "bids": contract_bids[period]}
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
-        infos = {aid: {"grid_reliance": 0.0} for aid in self.agents}
+        infos = {aid: {"grid_reliance": 0.0,
+                       "p2p_participation": 0.0,
+                       "contracted_qnt": 0.0} for aid in self.agents}
 
         return obs, infos
 
@@ -179,11 +183,14 @@ class EnergyTradingEnv(ParallelEnv):
             else:
 
                 # Discharging
-                discharge_P = min(self.es_P * soc_control,
+                discharge_P = max(self.es_P * soc_control,
                                   ((self.es_capacity[0] - soc)*self.es_efficiency[1])/self.dt)
                 
                 self.state_vars[aid]["soc"] = soc + (discharge_P * self.dt)/self.es_efficiency[1]
                 qnt = load + discharge_P * self.dt
+
+            # Ensure SOC is within bounds
+            self.state_vars[aid]["soc"] = np.clip(self.state_vars[aid]["soc"], self.es_capacity[0], self.es_capacity[1])
 
             # Prepare trade action
             quotes[aid] = (qnt, price)
@@ -196,6 +203,9 @@ class EnergyTradingEnv(ParallelEnv):
 
         # Costs/Earnings from successful trades
         rewards = {aid: -(trades[aid]["price"] * trades[aid]["qnt"]) for aid in self.agents}
+        # Update p2p participation based on local trades
+        for aid in self.agents:
+            self.state_vars[aid]["p2p_participation"] += abs(trades[aid]["qnt"])
 
         # Settle unmet quotes with ToU and FiT
         for buyer in open_book["buyers"]:
@@ -213,6 +223,8 @@ class EnergyTradingEnv(ParallelEnv):
             for aid in self.agents:
                 contract_trade = self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]
                 rewards[aid] -= (contract_trade["price"] * contract_trade["qnt"])
+                # Update contracted quantity
+                self.state_vars[aid]["contracted_qnt"] += abs(contract_trade["qnt"])
         
         # Time Controls
         self.timestep += 1
@@ -223,7 +235,9 @@ class EnergyTradingEnv(ParallelEnv):
         obs = {aid: self._get_obs(aid) if not done else np.zeros((obs_len,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
         terminations = {aid: False for aid in self.agents}
         truncations = {aid: done for aid in self.agents}
-        infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"]} for aid in self.agents}
+        infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"],
+                       "p2p_participation": self.state_vars[aid]["p2p_participation"],
+                       "contracted_qnt": self.state_vars[aid]["contracted_qnt"]} for aid in self.agents}
         
         return obs, rewards, terminations, truncations, infos
     
@@ -262,7 +276,7 @@ class EnergyTradingEnv(ParallelEnv):
 
         aid = self.aid_mapping[aid]
 
-        idx = self.eps_len * self.day + self.timestep
+        idx = self.day*24 + self.timestep
         is_prosumer = self.data[aid]["prosumer"]      
         
         demand = self.data[aid]["demand"][idx]

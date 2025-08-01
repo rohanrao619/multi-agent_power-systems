@@ -128,7 +128,7 @@ class ContractProposalEnv(ParallelEnv):
     def step(self, action_dict):
 
         # Decode actions
-        contract_bids = [{aid: (action_dict[aid][i], action_dict[aid][i+3]) for aid in self.agents} for i in range(len(self.trading_env.ToU))]
+        contract_bids = [{aid: (self.trading_env.max_contract_qnt*action_dict[aid][i], action_dict[aid][i+3]) for aid in self.agents} for i in range(len(self.trading_env.ToU))]
 
         # Reset base environment
         obs, infos = self.trading_env.reset(options={"contract_bids": contract_bids,

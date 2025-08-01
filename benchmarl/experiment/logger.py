@@ -143,7 +143,7 @@ class Logger:
                 gobal_done,
                 any_episode_ended,
                 to_log,
-                log_individual_agents=False,  # Turn on if you want single agent granularity
+                log_individual_agents=True,  # Turn on if you want single agent granularity
             )
             # group_episode_rewards has shape (n_episodes) as we took the mean over agents in the group
             groups_episode_rewards.append(group_episode_rewards)
@@ -151,7 +151,7 @@ class Logger:
             if "info" in batch.get(("next", group)).keys():
                 to_log.update(
                     {
-                        f"collection/{group}/info/{key}": value.to(torch.float)
+                        f"collection/{group}/info/{key}": value.to(torch.float).mean(dim=-1, keepdim=True)[gobal_done]
                         .mean()
                         .item()
                         for key, value in batch.get(("next", group, "info")).items()
@@ -352,14 +352,14 @@ class Logger:
             for i in range(n_agents_in_group):
                 self._log_min_mean_max(
                     to_log,
-                    f"{prefix}/{group}/reward/agent_{i}/reward",
+                    f"{prefix}/{group}/reward/agent_{self.group_map[group][i]}/reward",
                     reward[..., i, :],
                 )
                 if any_episode_ended:
                     agent_global_done = unsqueeze_global_done[..., i, :]
                     self._log_min_mean_max(
                         to_log,
-                        f"{prefix}/{group}/reward/agent_{i}/episode_reward",
+                        f"{prefix}/{group}/reward/agent_{self.group_map[group][i]}/episode_reward",
                         episode_reward[..., i, :][agent_global_done],
                     )
 

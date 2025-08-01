@@ -13,5 +13,5 @@ es_efficiency: [0.95, 0.95]
 ToU: [0.08, 0.13, 0.18]
 FiT: 0.04
 use_contracts: False
-max_contract_qnt: 2.0
+max_contract_qnt: null
 use_single_group: True

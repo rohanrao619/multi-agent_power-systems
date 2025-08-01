@@ -49,7 +49,10 @@ class EnergyTradingEnv(ParallelEnv):
 
         # Contracts
         self.use_contracts = config.get("use_contracts", False) # Bool
-        self.max_contract_qnt = config.get("max_contract_qnt", 2.0) # Max contract quantity
+        self.max_contract_qnt = config.get("max_contract_qnt", None) # Max contract quantity
+
+        if self.max_contract_qnt is None:
+            self.max_contract_qnt = self.max_pv
 
     def _setup_agents(self):
 
@@ -59,10 +62,14 @@ class EnergyTradingEnv(ParallelEnv):
         # For better agent names
         self.aid_mapping = {}
 
+        # Max PV for contract quantity
+        self.max_pv = 0
+
         for aid in self.data.keys():
 
             if self.data[aid]["prosumer"]:
                 self.aid_mapping[f"prosumer_{prosumer_idx}"] = aid
+                self.max_pv = max(self.max_pv, max(self.data[aid]["pv"]))
                 prosumer_idx += 1
             else:
                 self.aid_mapping[f"consumer_{consumer_idx}"] = aid
@@ -148,7 +155,8 @@ class EnergyTradingEnv(ParallelEnv):
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         infos = {aid: {"grid_reliance": 0.0,
                        "p2p_participation": 0.0,
-                       "contracted_qnt": 0.0} for aid in self.agents}
+                       "contracted_qnt": 0.0,
+                       "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
 
         return obs, infos
 
@@ -209,12 +217,12 @@ class EnergyTradingEnv(ParallelEnv):
 
         # Settle unmet quotes with ToU and FiT
         for buyer in open_book["buyers"]:
-            aid, price, qnt = buyer
+            aid, _, qnt = buyer
             rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
             self.state_vars[aid]["grid_reliance"] += qnt
 
         for seller in open_book["sellers"]:
-            aid, price, qnt = seller
+            aid, _, qnt = seller
             rewards[aid] += qnt * self.FiT
             self.state_vars[aid]["grid_reliance"] += qnt
 
@@ -237,7 +245,8 @@ class EnergyTradingEnv(ParallelEnv):
         truncations = {aid: done for aid in self.agents}
         infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"],
                        "p2p_participation": self.state_vars[aid]["p2p_participation"],
-                       "contracted_qnt": self.state_vars[aid]["contracted_qnt"]} for aid in self.agents}
+                       "contracted_qnt": self.state_vars[aid]["contracted_qnt"],
+                       "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
         
         return obs, rewards, terminations, truncations, infos
     
@@ -277,7 +286,7 @@ class EnergyTradingEnv(ParallelEnv):
         aid = self.aid_mapping[aid]
 
         idx = self.day*24 + self.timestep
-        is_prosumer = self.data[aid]["prosumer"]      
+        is_prosumer = self.data[aid]["prosumer"]
         
         demand = self.data[aid]["demand"][idx]
         pv = self.data[aid]["pv"][idx]

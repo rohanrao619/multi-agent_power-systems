@@ -54,6 +54,9 @@ if __name__ == "__main__":
     task.config["use_single_group"] = True
     task.config["use_contracts"] = False
     task.config["eps_len"] = 24
+    task.config["data_path"] = "data/ausgrid/group_1.json"
+    task.config["es_P"] = 0.5
+    task.config["es_capacity"] = [2, 6]
 
     experiment = Experiment(task=task,
                             algorithm_config=algorithm_config,

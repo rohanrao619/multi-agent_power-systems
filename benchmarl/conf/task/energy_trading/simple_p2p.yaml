@@ -2,7 +2,7 @@ defaults:
   - energy_trading_simple_p2p_config
   - _self_
 
-data_path: "data/ausgrid/ausgrid.json"
+data_path: "data/ausgrid/group_0.json"
 dt: 1
 eps_len: 24
 es_P: 2

@@ -2,7 +2,7 @@ defaults:
   - contract_proposal_tou_proposal_config
   - _self_
 
-data_path: "data/ausgrid/ausgrid.json"
+data_path: "data/ausgrid/group_0.json"
 base_exp_path: null
 dt: 1
 eps_len: 24

@@ -8,3 +8,4 @@ loss_function: "l2"
 delay_value: True
 use_tanh_mapping: True
 use_double_auction_critic: False
+exploration_type: "eps_greedy"  # or "additive_gaussian"

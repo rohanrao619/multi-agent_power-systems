@@ -1,6 +1,8 @@
 import json
 import numpy as np
 
+import torch
+
 from gymnasium import spaces
 from gymnasium.utils import seeding
 
@@ -27,12 +29,13 @@ class EnergyTradingEnv(ParallelEnv):
         self._setup_agents()
 
         # 3 year of data
-        self.n_days = int(len(self.data[self.aid_mapping[self.possible_agents[0]]]["pv"])/24)
+        # self.n_days = int(len(self.data[self.aid_mapping[self.possible_agents[0]]]["pv"])/24)
+        self.n_days = 90
 
         # Battery (ES) Config
         self.es_P = config.get("es_P", 2)  # Power rating of the battery
         self.es_capacity = config.get("es_capacity", [2, 10]) # [min soc, max soc]
-        self.es_efficiency = config.get("es_efficiency", [0.95,0.95])  # [charge efficiency, discharge efficiency]
+        self.es_efficiency = config.get("es_efficiency", [0.95, 0.95])  # [charge efficiency, discharge efficiency]
 
         # Grid Config, Time of Use
         self.ToU = config.get("ToU", [0.08, # 9 PM - 8 AM (Overnight)
@@ -109,7 +112,8 @@ class EnergyTradingEnv(ParallelEnv):
             self.np_random, self.np_random_seed = seeding.np_random(seed)
         
         self.timestep = 0
-        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days-7)
+        # self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days-7)
+        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(154, 154+self.n_days)
 
         self.agents = self.possible_agents.copy()
 
@@ -123,9 +127,6 @@ class EnergyTradingEnv(ParallelEnv):
                 "contracted_qnt": 0.0
             } for aid in self.agents
         } if (options is None or "state_vars" not in options) else options["state_vars"]
-
-        # Initialize orderbook with zero quotes
-        self.orderbook = {aid: (0, 0) for aid in self.agents}  # (quantity, price)
 
         if self.use_contracts:
             
@@ -202,9 +203,6 @@ class EnergyTradingEnv(ParallelEnv):
 
             # Prepare trade action
             quotes[aid] = (qnt, price)
-
-        # State Update
-        self.orderbook = quotes
         
         # Run the double auction
         matches, trades, open_book = self._run_double_auction(quotes)
@@ -239,28 +237,15 @@ class EnergyTradingEnv(ParallelEnv):
         done = (self.timestep >= self.eps_len)
 
         # Finishing Touches
-        obs_len = 6 if self.use_contracts else 4
-        obs = {aid: self._get_obs(aid) if not done else np.zeros((obs_len,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
-        terminations = {aid: False for aid in self.agents}
-        truncations = {aid: done for aid in self.agents}
+        obs = {aid: self._get_obs(aid) for aid in self.agents}
+        terminations = {aid: done for aid in self.agents}
+        truncations = {aid: False for aid in self.agents}
         infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"],
                        "p2p_participation": self.state_vars[aid]["p2p_participation"],
                        "contracted_qnt": self.state_vars[aid]["contracted_qnt"],
                        "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
         
         return obs, rewards, terminations, truncations, infos
-    
-    # Centralised training
-    def state(self):
-
-        state_vals = []
-
-        for aid in sorted(self.agents):
-            state_vals.append([self.orderbook[k] for k in sorted(self.agents) if k != aid])
-
-        state_vals = np.array(state_vals, dtype=np.float32).reshape(len(self.agents), -1)
-        
-        return state_vals
     
     def _get_obs(self, aid):
 
@@ -311,9 +296,9 @@ class EnergyTradingEnv(ParallelEnv):
             
             qnt, price = action
             if qnt > 0:
-                buyers.append((aid, price, qnt))  # buy quantity
+                buyers.append([aid, price, qnt])  # buy quantity
             elif qnt < 0:
-                sellers.append((aid, price, -qnt))  # sell quantity (as positive)
+                sellers.append([aid, price, -qnt])  # sell quantity (as positive)
             # quantity == 0 → no trade, ignored
 
         # Sort by willingness: buyers (high price first), sellers (low price first)
@@ -347,8 +332,8 @@ class EnergyTradingEnv(ParallelEnv):
                 trades[seller_id]["price"] = (trades[seller_id]["price"] * abs(trades[seller_id]["qnt"]) + clearing_price * trade_qnt) / (abs(trades[seller_id]["qnt"]) + trade_qnt)
                 trades[seller_id]["qnt"] -= trade_qnt
 
-                buyers[buyer_idx] = (buyer_id, bid_price, bid_qnt - trade_qnt)
-                sellers[seller_idx] = (seller_id, ask_price, ask_qnt - trade_qnt)
+                buyers[buyer_idx] = [buyer_id, bid_price, bid_qnt - trade_qnt]
+                sellers[seller_idx] = [seller_id, ask_price, ask_qnt - trade_qnt]
 
                 if buyers[buyer_idx][2] == 0:
                     buyer_idx += 1
@@ -362,3 +347,50 @@ class EnergyTradingEnv(ParallelEnv):
             "sellers": sellers[seller_idx:] if seller_idx < len(sellers) else []}
 
         return matches, trades, open_book
+
+    @staticmethod
+    def decode_actions_for_critic(obs, action, task_config):
+
+        es_P = task_config.get("es_P")
+        es_efficiency = task_config.get("es_efficiency")
+        es_capacity = task_config.get("es_capacity")
+        dt = task_config.get("dt")
+
+        price = action[..., 0:1]
+        soc_control = action[..., 1:2]
+
+        FiT = obs[..., -1:]
+        ToU = obs[..., -2:-1]
+        soc = obs[..., -3:-2]
+        load = obs[..., -4:-3]
+
+        # Scale Price
+        price = FiT + price * (ToU - FiT)
+
+        # Charging mask: soc_control >= 0
+        charging_mask = soc_control >= 0
+
+        # Charging calculation
+        charge_P = torch.minimum(
+            es_P * soc_control,
+            (es_capacity[1] - soc) / (es_efficiency[0] * dt))
+        
+        charge_P = torch.where(charging_mask, charge_P, torch.zeros_like(charge_P))
+
+        # Discharging calculation
+        discharge_P = torch.maximum(
+            es_P * soc_control,
+            ((es_capacity[0] - soc) * es_efficiency[1]) / dt)
+        
+        discharge_P = torch.where(~charging_mask, discharge_P, torch.zeros_like(discharge_P))
+
+        # qnt: load + charge/discharge
+        qnt = load + charge_P * dt + discharge_P * dt
+
+        # Decoded actions as quotes
+        quotes = torch.cat((price, qnt), dim=-1).reshape(*price.shape[:-2], -1)
+
+        # Expand quotes to match the number of agents
+        quotes = quotes.unsqueeze(-2).expand(*quotes.shape[:-1], obs.shape[-2], quotes.shape[-1])
+        
+        return quotes

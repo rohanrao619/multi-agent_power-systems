@@ -14,4 +14,3 @@ ToU: [0.08, 0.13, 0.18]
 FiT: 0.04
 use_contracts: False
 max_contract_qnt: null
-use_single_group: True

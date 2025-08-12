@@ -23,35 +23,41 @@ if __name__ == "__main__":
 
     # Experiment Config
     experiment_config.share_policy_params = False
-    experiment_config.max_n_frames = 262144
-    experiment_config.off_policy_collected_frames_per_batch = 8192
+    experiment_config.max_n_frames = int(262144/2)
+    experiment_config.off_policy_collected_frames_per_batch = 2048
+    experiment_config.off_policy_n_optimizer_steps = 8
+    experiment_config.off_policy_train_batch_size = 256
+    experiment_config.off_policy_memory_size = int(100000/2)
     experiment_config.off_policy_n_envs_per_worker = 8
+    experiment_config.exploration_eps_init = 0.8
+    experiment_config.exploration_eps_end = 0.1
+    experiment_config.exploration_anneal_frames = int(1e6/2)
     
     # Logging Config
     experiment_config.loggers = ['csv'] # No WandB for now
     experiment_config.save_folder = 'results'
-    experiment_config.checkpoint_interval = 8192
+    experiment_config.checkpoint_interval = 2048
+    experiment_config.keep_checkpoints_num = 1
     
     # Evaluation Config
     experiment_config.evaluation = True
-    experiment_config.evaluation_interval = 8192
-    experiment_config.evaluation_episodes = 32
     experiment_config.evaluation_static = True
+    experiment_config.evaluation_interval = 2048
+    experiment_config.evaluation_episodes = 32
 
     # Actor Config
-    model_config.num_cells = [128,128]
+    model_config.num_cells = [256,256]
     # model_config.activation_class = torch.nn.ReLU
 
     # Critic Config
-    critic_model_config.num_cells = [128,128]
+    critic_model_config.num_cells = [256,256]
     # critic_model_config.activation_class = torch.nn.ReLU
 
     # Algorithm Config
-    algorithm_config.use_double_auction_critic = False # Only implemented for MADDPG
+    algorithm_config.use_double_auction_critic = True # Only implemented for MADDPG
     algorithm_config.share_param_critic = False
 
     # Task Config
-    task.config["use_single_group"] = True
     task.config["use_contracts"] = False
     task.config["eps_len"] = 24
     task.config["data_path"] = "data/ausgrid/group_1.json"

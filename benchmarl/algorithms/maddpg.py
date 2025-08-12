@@ -10,12 +10,14 @@ from typing import Dict, Iterable, Tuple, Type
 from tensordict import TensorDictBase
 from tensordict.nn import TensorDictModule, TensorDictSequential
 from torchrl.data import Composite, Unbounded
-from torchrl.modules import AdditiveGaussianModule, Delta, ProbabilisticActor, TanhDelta
+from torchrl.modules import AdditiveGaussianModule, EGreedyModule
+from torchrl.modules import Delta, ProbabilisticActor, TanhDelta
 from torchrl.objectives import DDPGLoss, LossModule, ValueEstimators
 
 from benchmarl.algorithms.common import Algorithm, AlgorithmConfig
 from benchmarl.models.common import ModelConfig
 
+from env.energy_trading import EnergyTradingEnv
 
 class Maddpg(Algorithm):
     """Multi Agent DDPG (from `https://arxiv.org/abs/1706.02275 <https://arxiv.org/abs/1706.02275>`__).
@@ -36,6 +38,7 @@ class Maddpg(Algorithm):
         delay_value: bool,
         use_tanh_mapping: bool,
         use_double_auction_critic: bool,
+        exploration_type: str,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -44,6 +47,7 @@ class Maddpg(Algorithm):
         self.delay_value = delay_value
         self.loss_function = loss_function
         self.use_tanh_mapping = use_tanh_mapping
+        self.exploration_type = exploration_type # "eps_greedy" or "additive_gaussian"
 
         # customization
         self.use_double_auction_critic = use_double_auction_critic
@@ -144,7 +148,15 @@ class Maddpg(Algorithm):
     def _get_policy_for_collection(
         self, policy_for_loss: TensorDictModule, group: str, continuous: bool
     ) -> TensorDictModule:
-        noise_module = AdditiveGaussianModule(
+        noise_module = EGreedyModule(
+            spec=self.action_spec,
+            annealing_num_steps=self.experiment_config.get_exploration_anneal_frames(
+                self.on_policy
+            ),
+            action_key=(group, "action"),
+            eps_init=self.experiment_config.exploration_eps_init,
+            eps_end=self.experiment_config.exploration_eps_end,
+            device=self.device,) if self.exploration_type == "eps_greedy" else AdditiveGaussianModule(
             spec=self.action_spec,
             annealing_num_steps=self.experiment_config.get_exploration_anneal_frames(
                 self.on_policy
@@ -208,68 +220,27 @@ class Maddpg(Algorithm):
             )
 
         if self.state_spec is not None:
-
-            # Vanilla version, unaltered
-            if not self.use_double_auction_critic:
                 
-                modules.append(
-                    TensorDictModule(
-                        lambda action: action.reshape(*action.shape[:-2], -1),
-                        in_keys=[(group, "action")],
-                        out_keys=["global_action"],
+            modules.append(
+                TensorDictModule(
+                    lambda action: action.reshape(*action.shape[:-2], -1),
+                    in_keys=[(group, "action")],
+                    out_keys=["global_action"],
+                )
+            )
+
+            critic_input_spec = self.state_spec.clone().update(
+                {
+                    "global_action": Unbounded(
+                        shape=(self.action_spec[group, "action"].shape[-1] * n_agents,)
                     )
-                )
-
-                critic_input_spec = self.state_spec.clone().update(
-                    {
-                        "global_action": Unbounded(
-                            shape=(self.action_spec[group, "action"].shape[-1] * n_agents,)
-                        )
-                    }
-                )
-
-            # Double auction version, assumes ONE_GROUP_PER_AGENT
-            else:
-
-                total_agents = len(self.group_map.keys())
-                agent_idx = sorted(self.group_map.keys()).index(group)
-                
-                # Local action, flattened
-                modules.append(
-                    TensorDictModule(
-                        lambda action: action.reshape(*action.shape[:-2], -1),
-                        in_keys=[(group, "action")],
-                        out_keys=["local_action"],
-                    )
-                )
-
-                # Local observation, flattened
-                modules.append(
-                    TensorDictModule(
-                        lambda obs: obs.reshape(*obs.shape[:-2], -1),
-                        in_keys=[(group, "observation")],
-                        out_keys=["local_obs"],
-                    )
-                )
-                
-                # Filter agent's state
-                modules.append(
-                    TensorDictModule(
-                        lambda state: state[:,agent_idx,:].reshape(*state.shape[:-2], -1),
-                        in_keys=["state"],
-                        out_keys=["agent_state"],
-                    )
-                )
-
-                critic_input_spec = Composite(
-                    local_action = Unbounded(shape=(self.action_spec[group, "action"].shape[-1] * n_agents,)),
-                    local_obs = Unbounded(shape=(self.observation_spec[group, "observation"].shape[-1] * n_agents,)),
-                    agent_state = Unbounded(shape=((total_agents - 1)*2,))
-                )
+                }
+            )
 
             input_has_agent_dim = False
 
         else:
+
             critic_input_spec = Composite(
                 {
                     group: self.observation_spec[group]
@@ -277,7 +248,20 @@ class Maddpg(Algorithm):
                     .update(self.action_spec[group])
                 }
             )
+
+            if self.use_double_auction_critic:
+                    
+                # Decode actions to quotes
+                modules.append(
+                    TensorDictModule(
+                        lambda obs, action: EnergyTradingEnv.decode_actions_for_critic(obs, action, self.experiment.task.config),
+                        in_keys=[(group, "observation"), (group, "action")],
+                        out_keys=[(group, "quotes")]
+                    )
+                )
             
+                critic_input_spec[group].update({"quotes": Unbounded(shape=(n_agents,n_agents*2))})
+
             input_has_agent_dim = True
 
         modules.append(
@@ -319,6 +303,7 @@ class MaddpgConfig(AlgorithmConfig):
 
     # customization
     use_double_auction_critic: bool = MISSING
+    exploration_type: str = MISSING
 
     @staticmethod
     def associated_class() -> Type[Algorithm]:

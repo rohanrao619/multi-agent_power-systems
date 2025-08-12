@@ -101,6 +101,8 @@ evaluation_static: False
 
 # List of loggers to use, options are: wandb, csv, tensorboard, mflow
 loggers: [csv,wandb]
+# Turn on if you want single agent granularity
+log_individual_agents: False
 # Wandb project name (kept for backward compatibility)
 project_name: "benchmarl"
 # Wandb extra kwargs passed to the WandbLogger (~superset of wandb.init kwargs)

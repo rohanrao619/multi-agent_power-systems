@@ -110,6 +110,7 @@ class ExperimentConfig:
     evaluation_static: bool = MISSING
 
     loggers: List[str] = MISSING
+    log_individual_agents: bool = MISSING
     project_name: str = MISSING
     wandb_extra_kwargs: Dict[str, Any] = MISSING
     create_json: bool = MISSING

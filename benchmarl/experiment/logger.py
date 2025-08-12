@@ -143,7 +143,7 @@ class Logger:
                 gobal_done,
                 any_episode_ended,
                 to_log,
-                log_individual_agents=True,  # Turn on if you want single agent granularity
+                log_individual_agents=self.experiment_config.log_individual_agents,  # Turn on if you want single agent granularity
             )
             # group_episode_rewards has shape (n_episodes) as we took the mean over agents in the group
             groups_episode_rewards.append(group_episode_rewards)

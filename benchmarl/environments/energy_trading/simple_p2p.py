@@ -19,3 +19,5 @@ class TaskConfig:
     FiT: float = MISSING
     use_contracts: bool = MISSING
     max_contract_qnt: float = MISSING
+    use_double_auction: bool = MISSING
+    use_pooling: bool = MISSING

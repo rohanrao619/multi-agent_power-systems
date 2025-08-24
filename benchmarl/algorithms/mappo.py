@@ -50,7 +50,7 @@ class Mappo(Algorithm):
         self,
         share_param_critic: bool,
         clip_epsilon: float,
-        entropy_coef: bool,
+        entropy_coef: float,
         critic_coef: float,
         loss_critic_type: str,
         lmbda: float,

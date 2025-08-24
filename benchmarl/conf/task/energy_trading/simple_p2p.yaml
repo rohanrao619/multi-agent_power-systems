@@ -2,13 +2,15 @@ defaults:
   - energy_trading_simple_p2p_config
   - _self_
 
-data_path: "data/ausgrid/group_0.json"
+data_path: "data/ausgrid/group_3.json"
 dt: 1
 eps_len: 24
-es_P: 2
-es_capacity: [2, 10]
+es_P: 0.5
+es_capacity: [0, 2]
 es_efficiency: [0.95, 0.95]
 ToU: [0.08, 0.13, 0.18]
 FiT: 0.04
 use_contracts: False
 max_contract_qnt: null
+use_double_auction: True
+use_pooling: False

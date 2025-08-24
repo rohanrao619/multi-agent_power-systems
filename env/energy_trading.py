@@ -1,4 +1,6 @@
 import json
+import math
+import itertools
 import numpy as np
 
 import torch
@@ -29,26 +31,26 @@ class EnergyTradingEnv(ParallelEnv):
         self._setup_agents()
 
         # 3 year of data
-        # self.n_days = int(len(self.data[self.aid_mapping[self.possible_agents[0]]]["pv"])/24)
-        self.n_days = 90
+        self.n_days = int(len(self.data[self.aid_mapping[self.possible_agents[0]]]["pv"])/24)
 
         # Battery (ES) Config
-        self.es_P = config.get("es_P", 2)  # Power rating of the battery
-        self.es_capacity = config.get("es_capacity", [2, 10]) # [min soc, max soc]
+        self.es_P = config.get("es_P", 0.5)  # Power rating of the battery
+        self.es_capacity = config.get("es_capacity", [0, 2]) # [min soc, max soc]
         self.es_efficiency = config.get("es_efficiency", [0.95, 0.95])  # [charge efficiency, discharge efficiency]
 
         # Grid Config, Time of Use
-        self.ToU = config.get("ToU", [0.08, # 9 PM - 8 AM (Overnight)
-                                      0.13, # 9 AM - 4 PM (Off-Peak)
-                                      0.18]) # 5 PM - 8 PM (Peak)
+        self.ToU = config.get("ToU", [0.08, # Off-Peak
+                                      0.13, # Shoulder
+                                      0.18]) # Peak
         
         self.FiT = config.get("FiT", 0.04)  # Grid Config, Feed-in Tariff
 
-        # Timestep (hours) to ToU period
-        self.timemap = [0, 0, 0, 0, 0, 0, 0, 0, 0, # 12 AM - 8 AM
-                        1, 1, 1, 1, 1, 1, 1, 1, # 9 AM - 4 PM
-                        2, 2, 2, 2, # 5 PM - 8 PM
-                        0, 0, 0] # 9 PM - 11 PM
+        # Timestep (hours) to ToU period, AER 2014 + Seed Prices
+        self.timemap = [0, 0, 0, 0, 0, 0, 0, # 12 AM - 7 AM
+                        1, 1, 1, 1, 1, 1, 1, 1, # 7 AM - 3 PM
+                        2, 2, 2, 2, 2, 2, 2, # 3 PM - 10 PM
+                        1, # 10 PM - 11 PM
+                        0] # 11 PM - 12 AM
 
         # Contracts
         self.use_contracts = config.get("use_contracts", False) # Bool
@@ -57,6 +59,13 @@ class EnergyTradingEnv(ParallelEnv):
         if self.max_contract_qnt is None:
             self.max_contract_qnt = self.max_pv
 
+        # Clearing Mechanisms
+        self.use_double_auction = config.get("use_double_auction", True)
+        self.use_pooling = config.get("use_pooling", False)
+
+        # Double auction takes priority, if both are true, DA first then pool
+        assert self.use_double_auction or self.use_pooling, "At least one clearing mechanism must be used!"
+    
     def _setup_agents(self):
 
         prosumer_idx = 1
@@ -79,32 +88,33 @@ class EnergyTradingEnv(ParallelEnv):
                 consumer_idx += 1
         
         self.possible_agents = sorted(self.aid_mapping.keys())
-
+    
     def _timestep_to_ToU_period(self, timestep):
         return self.timemap[timestep % len(self.timemap)]
-
     
     def observation_space(self, agent):
         
         # Same for all
         if not self.use_contracts:
-            # Observation Space: [load, soc, ToU, FiT]
-            return spaces.Box(low=0, high=128, shape=(4,), dtype=np.float32)
+            # Observation Space: [load, soc, ToU, FiT, sin(t), cos(t)]
+            return spaces.Box(low=0, high=128, shape=(6,), dtype=np.float32)
         else:
             # Add contract: [commited qnt and price]
-            return spaces.Box(low=0, high=128, shape=(6,), dtype=np.float32)
+            return spaces.Box(low=0, high=128, shape=(8,), dtype=np.float32)
     
     def action_space(self, agent):
         
         # Same for all
-        # Action Space: [price and soc control]
-        return spaces.Box(low=np.array([0, -1]), high=np.array([1, 1]), shape=(2,), dtype=np.float32)
-    
+        if self.use_double_auction:
+            # price and soc control
+            return spaces.Box(low=np.array([0, -1]), high=np.array([1, 1]), shape=(2,), dtype=np.float32)
+        else:
+            # Only soc control
+            return spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
 
     # Zoo requirement
     def render(self):
         pass
-
 
     def reset(self, seed=None, options=None):
 
@@ -112,8 +122,7 @@ class EnergyTradingEnv(ParallelEnv):
             self.np_random, self.np_random_seed = seeding.np_random(seed)
         
         self.timestep = 0
-        # self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days-7)
-        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(154, 154+self.n_days)
+        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days-1)
 
         self.agents = self.possible_agents.copy()
 
@@ -160,7 +169,6 @@ class EnergyTradingEnv(ParallelEnv):
                        "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
 
         return obs, infos
-
     
     def step(self, action_dict):
         
@@ -170,8 +178,12 @@ class EnergyTradingEnv(ParallelEnv):
         # Update State
         for aid, action in action_dict.items():
 
-            price, soc_control = action
-            price = self.FiT + price * (self.ToU[self._timestep_to_ToU_period(self.timestep)] - self.FiT)  # Scale Price
+            if self.use_double_auction:
+                price, soc_control = action
+                price = self.FiT + price * (self.ToU[self._timestep_to_ToU_period(self.timestep)] - self.FiT)  # Scale Price
+            else:
+                soc_control = action[0]
+                price = 0.5 # Dummy price for pooling, unused
 
             soc = self.state_vars[aid]["soc"]
             load = self._get_load(aid)
@@ -203,26 +215,60 @@ class EnergyTradingEnv(ParallelEnv):
 
             # Prepare trade action
             quotes[aid] = (qnt, price)
-        
+            self.orderbook = quotes
+
+        # Rewards
+        rewards = {aid: 0.0 for aid in self.agents}
+
         # Run the double auction
-        matches, trades, open_book = self._run_double_auction(quotes)
+        if self.use_double_auction:
+            
+            matches, trades, open_book = self._run_double_auction(quotes)
 
-        # Costs/Earnings from successful trades
-        rewards = {aid: -(trades[aid]["price"] * trades[aid]["qnt"]) for aid in self.agents}
-        # Update p2p participation based on local trades
-        for aid in self.agents:
-            self.state_vars[aid]["p2p_participation"] += abs(trades[aid]["qnt"])
+            # Costs/Earnings from successful trades
+            rewards = {aid: -(trades[aid]["price"] * trades[aid]["qnt"]) for aid in self.agents}
+            # Update p2p participation based on local trades
+            for aid in self.agents:
+                self.state_vars[aid]["p2p_participation"] += abs(trades[aid]["qnt"])
+            
+            if not self.use_pooling:
+                # Settle unmet quotes with ToU and FiT
+                for buyer in open_book["buyers"]:
+                    aid, _, qnt = buyer
+                    rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
+                    self.state_vars[aid]["grid_reliance"] += qnt
 
-        # Settle unmet quotes with ToU and FiT
-        for buyer in open_book["buyers"]:
-            aid, _, qnt = buyer
-            rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
-            self.state_vars[aid]["grid_reliance"] += qnt
+                for seller in open_book["sellers"]:
+                    aid, _, qnt = seller
+                    rewards[aid] += qnt * self.FiT
+                    self.state_vars[aid]["grid_reliance"] += qnt
+        
+        # Directly add quotes to open book for pooling (skip DA)
+        else:
+            open_book = {"buyers": [], "sellers": []}
+            
+            for aid in self.agents:
+                qnt, _ = quotes[aid]
+                if qnt >= 0:
+                    # Buyer
+                    open_book["buyers"].append([aid, 0, abs(qnt)])
+                else:
+                    # Seller
+                    open_book["sellers"].append([aid, 0, abs(qnt)])
 
-        for seller in open_book["sellers"]:
-            aid, _, qnt = seller
-            rewards[aid] += qnt * self.FiT
-            self.state_vars[aid]["grid_reliance"] += qnt
+        # Run Shapley Pooling
+        if self.use_pooling:
+            shapley_values, grid_reliance = self._get_shapley_values(open_book)
+
+            for aid in self.agents:
+                rewards[aid] += shapley_values[aid]
+
+                if self.use_double_auction:
+                    # Trick, not sure of individual contributions to grid reliance
+                    self.state_vars[aid]["grid_reliance"] += (grid_reliance/len(self.agents))
+                else:
+                    # Averaged over group, so exact value
+                    self.state_vars[aid]["grid_reliance"] += grid_reliance
 
         # Settle contracts
         if self.use_contracts:
@@ -254,10 +300,14 @@ class EnergyTradingEnv(ParallelEnv):
         # Should be forecasted? How do we know beforehand?
         load = self._get_load(aid)
 
+        t = self.timestep/self.eps_len
+
         obs = [load,
                soc,
                self.ToU[self._timestep_to_ToU_period(self.timestep)],
-               self.FiT]
+               self.FiT,
+               np.sin(2 * np.pi * t),
+               np.cos(2 * np.pi * t)]
         
         if self.use_contracts:
             contract_trade = self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]
@@ -265,6 +315,24 @@ class EnergyTradingEnv(ParallelEnv):
             obs.append(contract_trade["price"])
 
         return np.array(obs, dtype=np.float32)
+    
+    # Use Global State for Critic
+    # Removes redundant info like FiT, ToU, sin(t), cos(t) for all agents
+    def state(self):
+
+        t = self.timestep/self.eps_len
+
+        global_state = [self.ToU[self._timestep_to_ToU_period(self.timestep)],
+                        self.FiT,
+                        np.sin(2 * np.pi * t),
+                        np.cos(2 * np.pi * t)]
+        
+        for aid in self.agents:
+            soc = self.state_vars[aid]["soc"]
+            load = self._get_load(aid)
+            global_state.extend([load, soc])
+
+        return np.array(global_state, dtype=np.float32)
     
     def _get_load(self, aid):
 
@@ -279,12 +347,10 @@ class EnergyTradingEnv(ParallelEnv):
 
         return load
     
-    
     def _gaussian_init(self, mean, bucket, v_min, v_max):
 
         # Gaussian (99.7%) on the bucket [mean-bucket/2, mean + bucket/2], clipped appropriately
         return np.clip(np.random.normal(mean, bucket/6), max(v_min, mean - bucket/2), min(v_max, mean + bucket/2))
-    
     
     def _run_double_auction(self, quotes):
        
@@ -347,7 +413,43 @@ class EnergyTradingEnv(ParallelEnv):
             "sellers": sellers[seller_idx:] if seller_idx < len(sellers) else []}
 
         return matches, trades, open_book
+    
+    def _get_coalition_value(self, S, qnt, ToU):
 
+        tot = 0
+        for p in S:
+            tot += qnt[p]
+        
+        return -(ToU * tot) if tot >= 0 else -(self.FiT * tot)
+
+    def _get_shapley_values(self, open_book):
+        
+        n = len(self.agents)
+        values = {p: 0 for p in self.agents}
+        qnt = {p: 0 for p in self.agents}
+
+        for buyer in open_book["buyers"]:
+            p, _, qnt_p = buyer
+            qnt[p] = qnt_p
+
+        for seller in open_book["sellers"]:
+            p, _, qnt_p = seller
+            qnt[p] = -qnt_p
+
+        ToU = self.ToU[self._timestep_to_ToU_period(self.timestep)]
+        
+        for p in self.agents:
+            for S in itertools.chain.from_iterable(itertools.combinations([x for x in self.agents if x != p], r) 
+                                                    for r in range(len(self.agents))):
+                S = set(S)
+                marginal_contribution = self._get_coalition_value(S | {p}, qnt, ToU) - self._get_coalition_value(S, qnt, ToU)
+                weight = (math.factorial(len(S)) * math.factorial(n - len(S) - 1)) / math.factorial(n)
+                values[p] += weight * marginal_contribution
+
+        grid_reliance = abs(sum(qnt[p] for p in self.agents))
+        
+        return values, grid_reliance
+    
     @staticmethod
     def decode_actions_for_critic(obs, action, task_config):
 

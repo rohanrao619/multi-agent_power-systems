@@ -40,7 +40,7 @@ class EnergyTradingClass(TaskClass):
     ) -> Callable[[], EnvBase]:    
         return lambda: PettingZooWrapper(
             env=EnergyTradingEnv(self.config),
-            return_state=False,
+            return_state=True,
             group_map=MarlGroupMapType.ALL_IN_ONE_GROUP,
             use_mask=False,
             categorical_actions=False,
@@ -90,7 +90,13 @@ class EnergyTradingClass(TaskClass):
     def state_spec(self, env: EnvBase) -> Optional[CompositeSpec]:
         # A spec for the state.
         # If provided, must be a CompositeSpec with one "state" entry
-        return None
+        
+        n_agents = len(env.group_map["agents"])
+        specs = Composite(state = Unbounded(shape=(4+n_agents*2,),
+                                            dtype=torch.float32,
+                                            device=env.device))
+
+        return specs
     
     def action_mask_spec(self, env: EnvBase) -> Optional[CompositeSpec]:
         # A spec for the action mask.

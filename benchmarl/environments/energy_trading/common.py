@@ -43,9 +43,10 @@ class EnergyTradingClass(TaskClass):
             return_state=True,
             group_map=MarlGroupMapType.ALL_IN_ONE_GROUP,
             use_mask=False,
-            categorical_actions=False,
-            seed=None,
-            done_on_any=True)
+            categorical_actions=not continuous_actions,
+            seed=seed,
+            done_on_any=True,
+            device=device)
 
     def supports_continuous_actions(self) -> bool:
         # Does the environment support continuous actions?

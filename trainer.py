@@ -45,14 +45,12 @@ if __name__ == "__main__":
     experiment_config.off_policy_n_optimizer_steps = 256
     experiment_config.off_policy_train_batch_size = 256
     experiment_config.off_policy_memory_size = 65536
-    experiment_config.off_policy_n_envs_per_worker = 8
     experiment_config.exploration_eps_init = 0.8
     experiment_config.exploration_eps_end = 0.1
     experiment_config.exploration_anneal_frames = 262144
 
     # Algorithm Config, On-Policy, MAPPO
     experiment_config.on_policy_collected_frames_per_batch = 16384
-    experiment_config.on_policy_n_envs_per_worker = 8
     experiment_config.on_policy_n_minibatch_iters = 4
     experiment_config.on_policy_minibatch_size = 256
     algorithm_config.clip_epsilon = 0.2
@@ -83,8 +81,11 @@ if __name__ == "__main__":
 
     # Hardware Config
     experiment_config.sampling_device = "cpu"
-    experiment_config.train_device = "cpu"
     experiment_config.buffer_device = "cpu"
+    experiment_config.train_device = "cuda"
+    experiment_config.parallel_collection = True
+    experiment_config.off_policy_n_envs_per_worker = 8
+    experiment_config.on_policy_n_envs_per_worker = 8
 
     experiment = Experiment(task=task,
                             algorithm_config=algorithm_config,

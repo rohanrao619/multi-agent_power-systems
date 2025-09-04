@@ -9,8 +9,10 @@ es_P: 0.5
 es_capacity: [0, 2]
 es_efficiency: [0.95, 0.95]
 ToU: [0.08, 0.13, 0.18]
+timemap: [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1, 0]
 FiT: 0.04
 use_contracts: False
+use_absolute_contracts: False
 max_contract_qnt: null
 use_double_auction: True
 use_pooling: False

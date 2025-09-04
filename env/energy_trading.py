@@ -46,14 +46,15 @@ class EnergyTradingEnv(ParallelEnv):
         self.FiT = config.get("FiT", 0.04)  # Grid Config, Feed-in Tariff
 
         # Timestep (hours) to ToU period, AER 2014 + Seed Prices
-        self.timemap = [0, 0, 0, 0, 0, 0, 0, # 12 AM - 7 AM
-                        1, 1, 1, 1, 1, 1, 1, 1, # 7 AM - 3 PM
-                        2, 2, 2, 2, 2, 2, 2, # 3 PM - 10 PM
-                        1, # 10 PM - 11 PM
-                        0] # 11 PM - 12 AM
+        self.timemap = config.get("timemap", [0, 0, 0, 0, 0, 0, 0, # 12 AM - 7 AM
+                                              1, 1, 1, 1, 1, 1, 1, 1, # 7 AM - 3 PM
+                                              2, 2, 2, 2, 2, 2, 2, # 3 PM - 10 PM
+                                              1, # 10 PM - 11 PM
+                                              0]) # 11 PM - 12 AM
 
         # Contracts
         self.use_contracts = config.get("use_contracts", False) # Bool
+        self.use_absolute_contracts = config.get("use_absolute_contracts", False) # Bool, absolute or relative to load
         self.max_contract_qnt = config.get("max_contract_qnt", None) # Max contract quantity
 
         if self.max_contract_qnt is None:
@@ -97,10 +98,10 @@ class EnergyTradingEnv(ParallelEnv):
         # Same for all
         if not self.use_contracts:
             # Observation Space: [load, soc, ToU, FiT, sin(t), cos(t)]
-            return spaces.Box(low=0, high=128, shape=(6,), dtype=np.float32)
+            return spaces.Box(low=-32, high=32, shape=(6,), dtype=np.float32)
         else:
-            # Add contract: [commited qnt and price]
-            return spaces.Box(low=0, high=128, shape=(8,), dtype=np.float32)
+            # Add contract: commited qnt
+            return spaces.Box(low=-32, high=32, shape=(7,), dtype=np.float32)
     
     def action_space(self, agent):
         
@@ -128,52 +129,52 @@ class EnergyTradingEnv(ParallelEnv):
 
         self.state_vars = {
             aid: {
-                "soc": self._gaussian_init(self.es_capacity[0] + (self.es_capacity[1] - self.es_capacity[0]) / 2,
-                                           self.es_capacity[1] - self.es_capacity[0],
-                                           self.es_capacity[0], self.es_capacity[1]),
+                "soc": options.get("soc")[aid] if (options is not None and "soc" in options) else
+                self._gaussian_init(self.es_capacity[0] + (self.es_capacity[1] - self.es_capacity[0]) / 2,
+                                    self.es_capacity[1] - self.es_capacity[0],
+                                    self.es_capacity[0], self.es_capacity[1]),
                 "grid_reliance": 0.0,
-                "p2p_participation": 0.0,
-                "contracted_qnt": 0.0
-            } for aid in self.agents
-        } if (options is None or "state_vars" not in options) else options["state_vars"]
+                "p2p_participation": 0.0
+            } for aid in self.agents}
 
         if self.use_contracts:
-            
-            if options is not None and "contract_bids" in options:
-                # Use provided bids
-                contract_bids = options["contract_bids"]
-            else:
-                contract_bids = list(dict() for _ in range(len(self.ToU)))
-                for aid in self.agents:
-                    for period in range(len(self.ToU)):
-                        
-                        # Randomly generate bids (better exploration possible?)
-                        price = self.FiT + np.random.uniform(0, 1) * (self.ToU[period] - self.FiT)
-                        qnt = np.random.uniform(-self.max_contract_qnt, self.max_contract_qnt)
-                        
-                        contract_bids[period][aid] = (qnt, price)
 
-            # Sign contracts using Double Auction, Just an idea for now
-            self.contracts = list(dict() for _ in range(len(self.ToU)))
-            for period in range(len(self.ToU)):
-                matches, trades, open_book = self._run_double_auction(contract_bids[period])
-                self.contracts[period] = {"matches": matches,
-                                          "trades": trades,
-                                          "open_book": open_book,
-                                          "bids": contract_bids[period]}
+            if options is not None and "contracts" in options:
+                self.contracts = options["contracts"]         
+            else:
+                # Randomly generate contracts (better exploration possible?)
+                self.contracts = list(dict() for _ in range(len(self.timemap)))
+
+                for t in range(len(self.timemap)):
+                    for aid in self.agents:
+                        if self.use_absolute_contracts:
+                            # Bit crude, 0 centered Gaussian also possible?
+                            self.contracts[t][aid] = np.random.uniform(-self.max_contract_qnt, self.max_contract_qnt)
+                            
+                            # # Better exploration maybe? Ensure consumers buy, prosumers sell
+                            # if "prosumer" in aid:
+                            #     self.contracts[t][aid] = np.random.uniform(-self.max_contract_qnt, 0)
+                            # else:
+                            #     self.contracts[t][aid] = np.random.uniform(0, self.max_contract_qnt)
+                        
+                        else:
+                            # Relative to load, commit percentage of expected load
+                            self.contracts[t][aid] = np.random.uniform(0, 1)
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         infos = {aid: {"grid_reliance": 0.0,
                        "p2p_participation": 0.0,
-                       "contracted_qnt": 0.0,
                        "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
 
         return obs, infos
     
     def step(self, action_dict):
         
-        # P2P quotes
-        quotes = {}
+        # Rewards
+        rewards = {aid: 0.0 for aid in self.agents}
+
+        # Total load, including ES actions
+        total_load = dict()
 
         # Update State
         for aid, action in action_dict.items():
@@ -189,8 +190,8 @@ class EnergyTradingEnv(ParallelEnv):
             load = self._get_load(aid)
 
             # Chip in contracts
-            if self.use_contracts:
-                load -= self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]["qnt"]
+            if self.use_contracts and self.use_absolute_contracts:
+                load -= self.contracts[self.timestep][aid] 
 
             if soc_control >= 0:
                 
@@ -198,8 +199,8 @@ class EnergyTradingEnv(ParallelEnv):
                 charge_P = min(self.es_P * soc_control,
                                (self.es_capacity[1] - soc)/(self.es_efficiency[0]*self.dt))
                 
+                total_load[aid] = load + charge_P * self.dt
                 self.state_vars[aid]["soc"] = soc + charge_P * self.dt * self.es_efficiency[0]
-                qnt = load + charge_P * self.dt
 
             else:
 
@@ -207,76 +208,105 @@ class EnergyTradingEnv(ParallelEnv):
                 discharge_P = max(self.es_P * soc_control,
                                   ((self.es_capacity[0] - soc)*self.es_efficiency[1])/self.dt)
                 
+                total_load[aid] = load + discharge_P * self.dt
                 self.state_vars[aid]["soc"] = soc + (discharge_P * self.dt)/self.es_efficiency[1]
-                qnt = load + discharge_P * self.dt
 
             # Ensure SOC is within bounds
             self.state_vars[aid]["soc"] = np.clip(self.state_vars[aid]["soc"], self.es_capacity[0], self.es_capacity[1])
 
-            # Prepare trade action
-            quotes[aid] = (qnt, price)
-            self.orderbook = quotes
-
-        # Rewards
-        rewards = {aid: 0.0 for aid in self.agents}
-
         # Run the double auction
         if self.use_double_auction:
+
+            # DA quotes
+            if self.use_double_auction:
+                quotes = dict()
+
+            # Prepare trade action
+            for aid in self.agents:
+                qnt = total_load[aid]
+
+                # Chip in contracts
+                if self.use_contracts and not self.use_absolute_contracts:
+                    qnt *= (1 - self.contracts[self.timestep][aid])
+                
+                quotes[aid] = (qnt, price)
+                self.orderbook = quotes
             
             matches, trades, open_book = self._run_double_auction(quotes)
 
             # Costs/Earnings from successful trades
-            rewards = {aid: -(trades[aid]["price"] * trades[aid]["qnt"]) for aid in self.agents}
+            for aid in self.agents:
+                rewards[aid] -= (trades[aid]["price"] * trades[aid]["qnt"])
+            
             # Update p2p participation based on local trades
             for aid in self.agents:
                 self.state_vars[aid]["p2p_participation"] += abs(trades[aid]["qnt"])
             
-            if not self.use_pooling:
+            # Store unmet quotes for pooling
+            if self.use_pooling:
+                pool_qnts = dict()
+            
+            for buyer in open_book["buyers"]:
+                aid, _, qnt = buyer
+
                 # Settle unmet quotes with ToU and FiT
-                for buyer in open_book["buyers"]:
-                    aid, _, qnt = buyer
+                if not self.use_pooling:
                     rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
                     self.state_vars[aid]["grid_reliance"] += qnt
+                else:
+                    pool_qnts[aid] = qnt
 
-                for seller in open_book["sellers"]:
-                    aid, _, qnt = seller
+            for seller in open_book["sellers"]:
+                aid, _, qnt = seller
+
+                # Settle unmet quotes with ToU and FiT
+                if not self.use_pooling:
                     rewards[aid] += qnt * self.FiT
                     self.state_vars[aid]["grid_reliance"] += qnt
-        
-        # Directly add quotes to open book for pooling (skip DA)
-        else:
-            open_book = {"buyers": [], "sellers": []}
-            
-            for aid in self.agents:
-                qnt, _ = quotes[aid]
-                if qnt >= 0:
-                    # Buyer
-                    open_book["buyers"].append([aid, 0, abs(qnt)])
                 else:
-                    # Seller
-                    open_book["sellers"].append([aid, 0, abs(qnt)])
+                    pool_qnts[aid] = -qnt
+        
+        # Direct pooling (skip DA)
+        else:
+            pool_qnts = dict()
+            for aid in self.agents:
+                qnt = total_load[aid]
+
+                # Chip in contracts
+                if self.use_contracts and not self.use_absolute_contracts:
+                    qnt *= (1 - self.contracts[self.timestep][aid])
+
+                pool_qnts[aid] = qnt
 
         # Run Shapley Pooling
         if self.use_pooling:
-            shapley_values, grid_reliance = self._get_shapley_values(open_book)
+            shapley_values, grid_reliance = self._get_shapley_values(pool_qnts)
+
+            for aid in self.agents:
+                rewards[aid] += shapley_values[aid]
+                
+                # Trick, not sure of individual contributions to grid reliance
+                self.state_vars[aid]["grid_reliance"] += (grid_reliance/len(self.agents))
+
+        # Settle Contracts
+        if self.use_contracts:
+
+            contract_qnts = dict()
+            
+            for aid in self.agents:
+                if self.use_absolute_contracts:
+                    qnt = self.contracts[self.timestep][aid]
+                else:
+                    qnt = self.contracts[self.timestep][aid] * total_load[aid]
+                contract_qnts[aid] = qnt
+            
+            shapley_values, grid_reliance = self._get_shapley_values(contract_qnts)
 
             for aid in self.agents:
                 rewards[aid] += shapley_values[aid]
 
-                if self.use_double_auction:
-                    # Trick, not sure of individual contributions to grid reliance
-                    self.state_vars[aid]["grid_reliance"] += (grid_reliance/len(self.agents))
-                else:
-                    # Averaged over group, so exact value
-                    self.state_vars[aid]["grid_reliance"] += grid_reliance
-
-        # Settle contracts
-        if self.use_contracts:
-            for aid in self.agents:
-                contract_trade = self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]
-                rewards[aid] -= (contract_trade["price"] * contract_trade["qnt"])
-                # Update contracted quantity
-                self.state_vars[aid]["contracted_qnt"] += abs(contract_trade["qnt"])
+                # Trick, not sure of individual contributions to grid reliance
+                self.state_vars[aid]["grid_reliance"] += (grid_reliance/len(self.agents))
         
         # Time Controls
         self.timestep += 1
@@ -288,7 +318,6 @@ class EnergyTradingEnv(ParallelEnv):
         truncations = {aid: False for aid in self.agents}
         infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"],
                        "p2p_participation": self.state_vars[aid]["p2p_participation"],
-                       "contracted_qnt": self.state_vars[aid]["contracted_qnt"],
                        "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
         
         return obs, rewards, terminations, truncations, infos
@@ -310,9 +339,7 @@ class EnergyTradingEnv(ParallelEnv):
                np.cos(2 * np.pi * t)]
         
         if self.use_contracts:
-            contract_trade = self.contracts[self._timestep_to_ToU_period(self.timestep)]["trades"][aid]
-            obs.append(contract_trade["qnt"])
-            obs.append(contract_trade["price"])
+            obs.append(self.contracts[self.timestep % len(self.timemap)][aid])
 
         return np.array(obs, dtype=np.float32)
     
@@ -331,6 +358,9 @@ class EnergyTradingEnv(ParallelEnv):
             soc = self.state_vars[aid]["soc"]
             load = self._get_load(aid)
             global_state.extend([load, soc])
+
+            if self.use_contracts:
+                global_state.append(self.contracts[self.timestep % len(self.timemap)][aid])
 
         return np.array(global_state, dtype=np.float32)
     
@@ -414,27 +444,18 @@ class EnergyTradingEnv(ParallelEnv):
 
         return matches, trades, open_book
     
-    def _get_coalition_value(self, S, qnt, ToU):
+    def _get_coalition_value(self, S, qnts, ToU):
 
         tot = 0
         for p in S:
-            tot += qnt[p]
+            tot += qnts[p]
         
         return -(ToU * tot) if tot >= 0 else -(self.FiT * tot)
 
-    def _get_shapley_values(self, open_book):
+    def _get_shapley_values(self, qnts):
         
         n = len(self.agents)
         values = {p: 0 for p in self.agents}
-        qnt = {p: 0 for p in self.agents}
-
-        for buyer in open_book["buyers"]:
-            p, _, qnt_p = buyer
-            qnt[p] = qnt_p
-
-        for seller in open_book["sellers"]:
-            p, _, qnt_p = seller
-            qnt[p] = -qnt_p
 
         ToU = self.ToU[self._timestep_to_ToU_period(self.timestep)]
         
@@ -442,11 +463,11 @@ class EnergyTradingEnv(ParallelEnv):
             for S in itertools.chain.from_iterable(itertools.combinations([x for x in self.agents if x != p], r) 
                                                     for r in range(len(self.agents))):
                 S = set(S)
-                marginal_contribution = self._get_coalition_value(S | {p}, qnt, ToU) - self._get_coalition_value(S, qnt, ToU)
+                marginal_contribution = self._get_coalition_value(S | {p}, qnts, ToU) - self._get_coalition_value(S, qnts, ToU)
                 weight = (math.factorial(len(S)) * math.factorial(n - len(S) - 1)) / math.factorial(n)
                 values[p] += weight * marginal_contribution
 
-        grid_reliance = abs(sum(qnt[p] for p in self.agents))
+        grid_reliance = abs(sum(qnts[p] for p in self.agents))
         
         return values, grid_reliance
     

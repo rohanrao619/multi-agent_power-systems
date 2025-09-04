@@ -10,12 +10,12 @@ from benchmarl.models.mlp import MlpConfig
 
 if __name__ == "__main__":
 
-    # Loads from "benchmarl/conf/task/energy_trading/simple_p2p.yaml"
-    task = EnergyTradingTask.SIMPLE_P2P.get_from_yaml()
+    # # Loads from "benchmarl/conf/task/energy_trading/simple_p2p.yaml"
+    # task = EnergyTradingTask.SIMPLE_P2P.get_from_yaml()
 
-    # # Loads from "benchmarl/conf/task/contract_proposal/tou_proposal.yaml"
-    # task = ContractProposalTask.TOU_PROPOSAL.get_from_yaml()
-    # task.config["base_exp_path"] = "results/mappo_simple_p2p_mlp__97375b87_25_07_26-19_17_31/checkpoints/checkpoint_32768.pt"
+    # Loads from "benchmarl/conf/task/contract_proposal/hourly_commits.yaml"
+    task = ContractProposalTask.HOURLY_COMMITS.get_from_yaml()
+    task.config["base_exp_path"] = "results/mappo_simple_p2p_mlp__82af9d50_25_09_04-22_30_47/checkpoints/checkpoint_524288.pt"
 
     # Modify as needed
     algorithm_config = MappoConfig.get_from_yaml()
@@ -70,22 +70,24 @@ if __name__ == "__main__":
     experiment_config.evaluation_interval = 16384
     experiment_config.evaluation_episodes = 128
 
-    # Task Config
-    task.config["use_contracts"] = False
-    task.config["eps_len"] = 24
-    task.config["data_path"] = "data/ausgrid/group_3.json"
-    task.config["es_P"] = 0.5
-    task.config["es_capacity"] = [0, 2]
-    task.config["use_double_auction"] = False # Hypothesis:
-    task.config["use_pooling"] = True # Can Shapley get the job done?
+    # # Task Config
+    # task.config["eps_len"] = 24
+    # task.config["data_path"] = "data/ausgrid/group_3.json"
+    # task.config["es_P"] = 0.5
+    # task.config["es_capacity"] = [0, 2]
+    # task.config["use_double_auction"] = True
+    # task.config["use_pooling"] = False
+    # task.config["use_contracts"] = True
+    # task.config["use_absolute_contracts"] = False
+    # task.config["max_contract_qnt"] = 1.0
 
     # Hardware Config
     experiment_config.sampling_device = "cpu"
     experiment_config.buffer_device = "cpu"
     experiment_config.train_device = "cuda"
-    experiment_config.parallel_collection = True
+    experiment_config.parallel_collection = False
     experiment_config.off_policy_n_envs_per_worker = 8
-    experiment_config.on_policy_n_envs_per_worker = 8
+    experiment_config.on_policy_n_envs_per_worker = 4
 
     experiment = Experiment(task=task,
                             algorithm_config=algorithm_config,

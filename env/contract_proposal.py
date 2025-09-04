@@ -20,32 +20,38 @@ class ContractProposalEnv(ParallelEnv):
         # Zoo requirement
         self.render_mode = render_mode
 
-        # Forced
-        config['use_contracts'] = True
+        # Base experminent data
+        base_exp = Experiment.reload_from_file(config['base_exp_path'])
+        self.base_config = base_exp.task.config
+        self.group_map = base_exp.group_map
+        self.base_policy = base_exp.policy
+
+        # Clear memory
+        del base_exp
 
         # Base environment
-        self.trading_env = EnergyTradingEnv(config, render_mode=render_mode)
-
-        # Base experminent data, get policy
-        self.base_exp = Experiment.reload_from_file(config['base_exp_path'])
+        self.trading_env = EnergyTradingEnv(self.base_config, render_mode=render_mode)
 
         # Setup agents
         self.possible_agents = self.trading_env.possible_agents
 
-        # Episode length, week to start with
-        self.eps_len = config.get('contract_eps_len', 7)
-
+        # Episode length, Max contract quantity and type, same as base environment
+        self.eps_len = self.base_config['eps_len']
+        self.max_contract_qnt = self.base_config['max_contract_qnt']
+        self.use_absolute_contracts = self.base_config['use_absolute_contracts']
+                                  
     def observation_space(self, agent):
         
         # Same for all
-        # Observation Space: [soc, FiT] + [ToU, load] x ToU periods
-        return spaces.Box(low=0, high=128, shape=(2+2*len(self.trading_env.ToU),), dtype=np.float32)
+        # Observation Space: Just sin(t), cos(t), and optionally max_contract_qnt, going in Bandit style
+        return spaces.Box(low=-32, high=32, shape=(3 if self.use_absolute_contracts else 2,), dtype=np.float32)
     
     def action_space(self, agent):
         
         # Same for all
-        # Action Space: [commit qnt and price] X ToU periods
-        return spaces.Box(low=np.array([-1, -1, -1, 0, 0, 0]), high=np.ones(shape=(6,)), shape=(2*len(self.trading_env.ToU),), dtype=np.float32)
+        # Action Space: Contract quantity
+        return spaces.Box(low=-1 if self.use_absolute_contracts else 0, 
+                          high=1, shape=(1,), dtype=np.float32)
 
     # Zoo requirement
     def render(self):
@@ -57,114 +63,92 @@ class ContractProposalEnv(ParallelEnv):
             self.np_random, self.np_random_seed = seeding.np_random(seed)
 
         self.timestep = 0
-        self.day = np.random.randint(0, self.trading_env.n_days-self.eps_len) # Need at least eps_len days to complete an episode
+        self.day = np.random.randint(0, self.trading_env.n_days-1)
 
         self.agents = self.possible_agents.copy()
 
-        self.state_vars = {
-            aid: {
-                "soc": self.trading_env._gaussian_init(self.trading_env.es_capacity[0] + (self.trading_env.es_capacity[1] - self.trading_env.es_capacity[0]) / 2,
-                                           self.trading_env.es_capacity[1] - self.trading_env.es_capacity[0],
-                                           self.trading_env.es_capacity[0], self.trading_env.es_capacity[1]),
-                "grid_reliance": 0.0,
-                "p2p_participation": 0.0,
-                "contracted_qnt": 0.0
-            } for aid in self.agents
-        }
+        # Reset base environment
+        self.base_obs, _ = self.trading_env.reset(options={"day": self.day})
 
         obs = {aid: self._get_obs(aid) for aid in self.agents}
-        infos = {aid: {"grid_reliance": 0.0,
-                       "p2p_participation": 0.0,
-                       "contracted_qnt": 0.0} for aid in self.agents}
+        infos = {aid: {} for aid in self.agents}
 
         return obs, infos
     
     def _get_obs(self, aid):
 
-        soc = self.state_vars[aid]["soc"]
+        t = self.timestep/self.eps_len
 
-        # Should be forecasted? How do we know beforehand?
-        load = self._get_load(aid)
-
-        obs = [soc, self.trading_env.FiT] + self.trading_env.ToU + load
+        obs = [np.sin(2 * np.pi * t),
+               np.cos(2 * np.pi * t)]
+        
+        if self.use_absolute_contracts:
+            obs.append(self.max_contract_qnt)
 
         return np.array(obs, dtype=np.float32)
     
-    def _get_load(self, aid):
+    # Use Global State, same as base Critics
+    def state(self):
 
-        aid = self.trading_env.aid_mapping[aid]
+        t = self.timestep/self.eps_len
 
-        idx = self.trading_env.eps_len * self.day + self.timestep*self.trading_env.eps_len
-        is_prosumer = self.trading_env.data[aid]["prosumer"]      
+        global_state = [np.sin(2 * np.pi * t),
+                        np.cos(2 * np.pi * t),
+                        self.trading_env.ToU[self.trading_env._timestep_to_ToU_period(self.timestep)],
+                        self.trading_env.FiT]
         
-        demand = np.array(self.trading_env.data[aid]["demand"][idx:idx + self.trading_env.eps_len])
-        pv = np.array(self.trading_env.data[aid]["pv"][idx:idx + self.trading_env.eps_len])
+        for aid in self.agents:
+            soc = self.trading_env.state_vars[aid]["soc"]
+            load = self.trading_env._get_load(aid)
 
-        # Convert timemap to numpy array for element-wise comparison
-        timemap = np.array(self.trading_env.timemap)
-        
-        tou_demands = [self._aggregate_over_ToU(demand[timemap == i]) for i in range(len(self.trading_env.ToU))]
-        tou_pvs = [self._aggregate_over_ToU(pv[timemap == i]) for i in range(len(self.trading_env.ToU))]
-        
-        load = [a-b for a, b in zip(tou_demands, tou_pvs)] if is_prosumer else tou_demands
+            global_state.extend([load, soc])
 
-        return load
-    
-    def _aggregate_over_ToU(self, data):
-
-        return sum(data)/len(data)
+        return np.array(global_state, dtype=np.float32)
     
     # Apply base policy to trade, assuming single group
     def _trade_forward(self, obs):
 
-        stacked_obs = Tensor([obs[aid] for aid in self.base_exp.group_map['agents']])
-        obs_tdict = TensorDict(agents=TensorDict(observation=stacked_obs))
+        stacked_obs = Tensor([obs[aid] for aid in self.group_map['agents']])
+        obs_tdict = TensorDict(agents=TensorDict(observation=stacked_obs)).to(self.base_policy.device)
 
-        actions = self.base_exp.policy.forward(obs_tdict)['agents']['action'].cpu().numpy()
-        action_dict = {aid: actions[i] for i, aid in enumerate(self.base_exp.group_map['agents'])}
+        actions = self.base_policy.forward(obs_tdict)['agents']['action'].detach().cpu().numpy()
+        action_dict = {aid: actions[i] for i, aid in enumerate(self.group_map['agents'])}
+
+        # Clear memory
+        del obs_tdict
+        del actions
         
         return action_dict
     
     def step(self, action_dict):
-
-        # Decode actions
-        contract_bids = [{aid: (self.trading_env.max_contract_qnt*action_dict[aid][i], action_dict[aid][i+3]) for aid in self.agents} for i in range(len(self.trading_env.ToU))]
-
-        # Reset base environment
-        obs, infos = self.trading_env.reset(options={"contract_bids": contract_bids,
-                                                     "day": self.day + self.timestep,
-                                                     "state_vars": self.state_vars})
+        
+        for aid in self.agents:
+            if self.use_absolute_contracts:
+                # Rescale action from [-1, 1] to [-max_contract_qnt, max_contract_qnt]
+                contract_qnt = action_dict[aid][0] * self.max_contract_qnt
+            else:
+                contract_qnt = action_dict[aid][0]
+            
+            self.trading_env.contracts[self.timestep][aid] = contract_qnt
         
         # Init rewards
-        tot_rewards = {aid: 0.0 for aid in self.agents}
+        rewards = {aid: 0.0 for aid in self.agents}
         
-        # Step base environment for an episode
-        for _ in range(self.trading_env.eps_len):
-
-            # Base environment actor
-            actions = self._trade_forward(obs)
-            
-            obs, rewards, terminations, truncations, infos = self.trading_env.step(actions)
-            for aid in self.agents:
-                tot_rewards[aid] += rewards[aid]
-
-        # Update SOC
+        # Step base environment
+        base_actions = self._trade_forward(self.base_obs)
+        
+        self.base_obs, base_rewards, _, _, _ = self.trading_env.step(base_actions)
         for aid in self.agents:
-            self.state_vars[aid]["soc"] = self.trading_env.state_vars[aid]["soc"]
-            self.state_vars[aid]["grid_reliance"] = self.trading_env.state_vars[aid]["grid_reliance"]
-            self.state_vars[aid]["p2p_participation"] = self.trading_env.state_vars[aid]["p2p_participation"]
-            self.state_vars[aid]["contracted_qnt"] = self.trading_env.state_vars[aid]["contracted_qnt"]
+            rewards[aid] += base_rewards[aid]
         
         # Time Controls
         self.timestep += 1
         done = (self.timestep >= self.eps_len)
 
         # Finishing Touches
-        obs = {aid: self._get_obs(aid) if not done else np.zeros((8,), dtype=np.float32) for aid in self.agents} # Gibberish at the end, does not matter
-        terminations = {aid: False for aid in self.agents}
-        truncations = {aid: done for aid in self.agents}
-        infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"],
-                       "p2p_participation": self.state_vars[aid]["p2p_participation"],
-                       "contracted_qnt": self.state_vars[aid]["contracted_qnt"]} for aid in self.agents}
+        obs = {aid: self._get_obs(aid) for aid in self.agents}
+        terminations = {aid: done for aid in self.agents}
+        truncations = {aid: False for aid in self.agents}
+        infos = {aid: {} for aid in self.agents}
         
-        return obs, tot_rewards, terminations, truncations, infos
+        return obs, rewards, terminations, truncations, infos

@@ -23,7 +23,7 @@ class ContractProposalTask(Task):
     # Your task names.
     # Their config will be loaded from conf/task/customenv
 
-    TOU_PROPOSAL = None  # Loaded automatically from conf/task/customenv/task_1
+    HOURLY_COMMITS = None  # Loaded automatically from conf/task/customenv/task_1
 
     @staticmethod
     def associated_class():
@@ -40,12 +40,13 @@ class ContractProposalClass(TaskClass):
     ) -> Callable[[], EnvBase]:    
         return lambda: PettingZooWrapper(
             env=ContractProposalEnv(self.config),
-            return_state=False,
+            return_state=True,
             group_map=MarlGroupMapType.ALL_IN_ONE_GROUP,
             use_mask=False,
-            categorical_actions=False,
-            seed=None,
-            done_on_any=True)
+            categorical_actions=not continuous_actions,
+            seed=seed,
+            done_on_any=True,
+            device=device)
 
     def supports_continuous_actions(self) -> bool:
         # Does the environment support continuous actions?
@@ -90,7 +91,13 @@ class ContractProposalClass(TaskClass):
     def state_spec(self, env: EnvBase) -> Optional[CompositeSpec]:
         # A spec for the state.
         # If provided, must be a CompositeSpec with one "state" entry
-        return None
+        
+        n_agents = len(env.group_map["agents"])
+        specs = Composite(state = Unbounded(shape=(4+n_agents*2,),
+                                            dtype=torch.float32,
+                                            device=env.device))
+
+        return specs
     
     def action_mask_spec(self, env: EnvBase) -> Optional[CompositeSpec]:
         # A spec for the action mask.

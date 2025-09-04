@@ -16,8 +16,10 @@ class TaskConfig:
     es_capacity: list[float] = MISSING
     es_efficiency: list[float] = MISSING
     ToU: list[float] = MISSING
+    timemap: list[int] = MISSING
     FiT: float = MISSING
     use_contracts: bool = MISSING
+    use_absolute_contracts: bool = MISSING
     max_contract_qnt: float = MISSING
     use_double_auction: bool = MISSING
     use_pooling: bool = MISSING

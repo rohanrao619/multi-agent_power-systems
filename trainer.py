@@ -10,12 +10,12 @@ from benchmarl.models.mlp import MlpConfig
 
 if __name__ == "__main__":
 
-    # # Loads from "benchmarl/conf/task/energy_trading/simple_p2p.yaml"
-    # task = EnergyTradingTask.SIMPLE_P2P.get_from_yaml()
+    # Loads from "benchmarl/conf/task/energy_trading/simple_p2p.yaml"
+    task = EnergyTradingTask.SIMPLE_P2P.get_from_yaml()
 
-    # Loads from "benchmarl/conf/task/contract_proposal/hourly_commits.yaml"
-    task = ContractProposalTask.HOURLY_COMMITS.get_from_yaml()
-    task.config["base_exp_path"] = "results/mappo_simple_p2p_mlp__82af9d50_25_09_04-22_30_47/checkpoints/checkpoint_524288.pt"
+    # # Loads from "benchmarl/conf/task/contract_proposal/hourly_commits.yaml"
+    # task = ContractProposalTask.HOURLY_COMMITS.get_from_yaml()
+    # task.config["base_exp_path"] = "results/mappo_simple_p2p_mlp__82af9d50_25_09_04-22_30_47/checkpoints/checkpoint_524288.pt"
 
     # Modify as needed
     algorithm_config = MappoConfig.get_from_yaml()
@@ -27,14 +27,15 @@ if __name__ == "__main__":
     experiment_config.share_policy_params = False
     experiment_config.max_n_frames = 524288
     experiment_config.gamma = 0.99
-    experiment_config.lr = 0.00005
+    experiment_config.lr = 5e-4
+    experiment_config.clip_grad_val = 5 # Unexplored, Untuned
 
     # Actor Config
-    model_config.num_cells = [256, 256]
+    model_config.num_cells = [128, 64]
     model_config.activation_class = torch.nn.ReLU
 
     # Critic Config
-    critic_model_config.num_cells = [256, 256]
+    critic_model_config.num_cells = [256, 128]
     critic_model_config.activation_class = torch.nn.ReLU
     algorithm_config.share_param_critic = False
     
@@ -50,44 +51,48 @@ if __name__ == "__main__":
     experiment_config.exploration_anneal_frames = 262144
 
     # Algorithm Config, On-Policy, MAPPO
-    experiment_config.on_policy_collected_frames_per_batch = 16384
+    experiment_config.on_policy_collected_frames_per_batch = 8192
     experiment_config.on_policy_n_minibatch_iters = 4
     experiment_config.on_policy_minibatch_size = 256
     algorithm_config.clip_epsilon = 0.2
-    algorithm_config.entropy_coef = 0.02
+    algorithm_config.entropy_coef = 0.04
     algorithm_config.critic_coef = 1.0
-    algorithm_config.lmbda = 0.99
+    algorithm_config.lmbda = 0.96
     
     # Logging Config
     experiment_config.loggers = ['csv'] # No WandB for now
     experiment_config.save_folder = 'results'
-    experiment_config.checkpoint_interval = 16384
+    experiment_config.checkpoint_interval = 8192
     experiment_config.keep_checkpoints_num = 1
     
     # Evaluation Config
     experiment_config.evaluation = True
     experiment_config.evaluation_static = True
-    experiment_config.evaluation_interval = 16384
+    experiment_config.evaluation_interval = 8192
     experiment_config.evaluation_episodes = 128
 
-    # # Task Config
-    # task.config["eps_len"] = 24
-    # task.config["data_path"] = "data/ausgrid/group_3.json"
-    # task.config["es_P"] = 0.5
-    # task.config["es_capacity"] = [0, 2]
-    # task.config["use_double_auction"] = True
-    # task.config["use_pooling"] = False
-    # task.config["use_contracts"] = True
-    # task.config["use_absolute_contracts"] = False
-    # task.config["max_contract_qnt"] = 1.0
+    # Task Config
+    task.config["data_path"] = "data/ausgrid/group_4.json"
+    task.config["dt"] = 1
+    task.config["eps_len"] = 24
+    task.config["es_P"] = 2
+    task.config["es_capacity"] = [0, 8]
+    task.config["es_efficiency"] = [0.95, 0.95]
+    task.config["ToU"] = [0.15, 0.22, 0.44]
+    task.config["FiT"] = 0.04
+    task.config["use_double_auction"] = True
+    task.config["use_pooling"] = False
+    task.config["use_contracts"] = False
+    task.config["use_absolute_contracts"] = False
+    task.config["max_contract_qnt"] = 1.0
 
     # Hardware Config
     experiment_config.sampling_device = "cpu"
     experiment_config.buffer_device = "cpu"
     experiment_config.train_device = "cuda"
-    experiment_config.parallel_collection = False
+    experiment_config.parallel_collection = True
     experiment_config.off_policy_n_envs_per_worker = 8
-    experiment_config.on_policy_n_envs_per_worker = 4
+    experiment_config.on_policy_n_envs_per_worker = 8
 
     experiment = Experiment(task=task,
                             algorithm_config=algorithm_config,

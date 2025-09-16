@@ -31,7 +31,13 @@ class EnergyTradingEnv(ParallelEnv):
         self._setup_agents()
 
         # 3 year of data
-        self.n_days = int(len(self.data[self.aid_mapping[self.possible_agents[0]]]["pv"])/24)
+        self.train_days = self.data['meta']["train_days"]
+        if 1095 in self.train_days:
+            self.train_days.remove(1095)  # Last day problem
+        
+        self.is_weekend = self.data['meta']["is_weekend"]
+        self.is_summer = self.data['meta']["is_summer"]
+        self.is_winter = self.data['meta']["is_winter"]
 
         # Battery (ES) Config
         self.es_P = config.get("es_P", 0.5)  # Power rating of the battery
@@ -45,20 +51,27 @@ class EnergyTradingEnv(ParallelEnv):
         
         self.FiT = config.get("FiT", 0.04)  # Grid Config, Feed-in Tariff
 
-        # Timestep (hours) to ToU period, AER 2014 + Seed Prices
-        self.timemap = config.get("timemap", [0, 0, 0, 0, 0, 0, 0, # 12 AM - 7 AM
-                                              1, 1, 1, 1, 1, 1, 1, 1, # 7 AM - 3 PM
-                                              2, 2, 2, 2, 2, 2, 2, # 3 PM - 10 PM
-                                              1, # 10 PM - 11 PM
-                                              0]) # 11 PM - 12 AM
+        # Timestep (hours) to ToU period, AER 2019
+        self.summer_timemap = [0, 0, 0, 0, 0, 0, 0, # 12 AM - 7 AM
+                               1, 1, 1, 1, 1, 1, 1, # 7 AM - 2 PM
+                               2, 2, 2, 2, 2, 2, # 2 PM - 8 PM
+                               1, 1, # 8 PM - 10 PM
+                               0, 0] # 10 PM - 12 AM
+        
+        self.winter_timemap = [0, 0, 0, 0, 0, 0, 0, # 12 AM - 7 AM
+                               1, 1, 1, 1, 1, 1, 1, 1, 1, 1, # 7 AM - 5 PM
+                               2, 2, 2, 2, # 5 PM - 9 PM
+                               1, # 9 PM - 10 PM
+                               0, 0] # 10 PM - 12 AM
+        
+        self.weekend_timemap = [0, 0, 0, 0, 0, 0, 0, # 12 AM - 7 AM
+                                1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, # 7 AM - 10 PM
+                                0, 0] # 10 PM - 12 AM
 
         # Contracts
         self.use_contracts = config.get("use_contracts", False) # Bool
         self.use_absolute_contracts = config.get("use_absolute_contracts", False) # Bool, absolute or relative to load
-        self.max_contract_qnt = config.get("max_contract_qnt", None) # Max contract quantity
-
-        if self.max_contract_qnt is None:
-            self.max_contract_qnt = self.max_pv
+        self.max_contract_qnt = config.get("max_contract_qnt", 1.0) # Max contract quantity
 
         # Clearing Mechanisms
         self.use_double_auction = config.get("use_double_auction", True)
@@ -75,14 +88,13 @@ class EnergyTradingEnv(ParallelEnv):
         # For better agent names
         self.aid_mapping = {}
 
-        # Max PV for contract quantity
-        self.max_pv = 0
-
         for aid in self.data.keys():
+
+            if aid == "meta":
+                continue
 
             if self.data[aid]["prosumer"]:
                 self.aid_mapping[f"prosumer_{prosumer_idx}"] = aid
-                self.max_pv = max(self.max_pv, max(self.data[aid]["pv"]))
                 prosumer_idx += 1
             else:
                 self.aid_mapping[f"consumer_{consumer_idx}"] = aid
@@ -91,17 +103,23 @@ class EnergyTradingEnv(ParallelEnv):
         self.possible_agents = sorted(self.aid_mapping.keys())
     
     def _timestep_to_ToU_period(self, timestep):
-        return self.timemap[timestep % len(self.timemap)]
+
+        # Ultra realistic, AER 2019
+        if self.is_weekend[self.day] or (not (self.is_summer[self.day] or self.is_winter[self.day])):
+            return self.weekend_timemap[timestep % 24]
+        elif self.is_summer[self.day]:
+            return self.summer_timemap[timestep % 24]
+        else:
+            return self.winter_timemap[timestep % 24]
     
     def observation_space(self, agent):
         
-        # Same for all
         if not self.use_contracts:
-            # Observation Space: [load, soc, ToU, FiT, sin(t), cos(t)]
-            return spaces.Box(low=-32, high=32, shape=(6,), dtype=np.float32)
+            # Observation Space: [load, pv, soc, ToU, FiT, sin(t), cos(t), is_weekend, is_summer, is_winter]
+            return spaces.Box(low=-32, high=32, shape=(10,), dtype=np.float32)
         else:
             # Add contract: commited qnt
-            return spaces.Box(low=-32, high=32, shape=(7,), dtype=np.float32)
+            return spaces.Box(low=-32, high=32, shape=(11,), dtype=np.float32)
     
     def action_space(self, agent):
         
@@ -118,12 +136,9 @@ class EnergyTradingEnv(ParallelEnv):
         pass
 
     def reset(self, seed=None, options=None):
-
-        if seed is not None:
-            self.np_random, self.np_random_seed = seeding.np_random(seed)
         
         self.timestep = 0
-        self.day = options.get("day") if options is not None and "day" in options else np.random.randint(0, self.n_days-1)
+        self.day = options.get("day") if options is not None and "day" in options else np.random.choice(self.train_days)
 
         self.agents = self.possible_agents.copy()
 
@@ -187,11 +202,16 @@ class EnergyTradingEnv(ParallelEnv):
                 price = 0.5 # Dummy price for pooling, unused
 
             soc = self.state_vars[aid]["soc"]
-            load = self._get_load(aid)
+            
+            demand, pv = self._get_load(aid)
+            load = demand - pv if self._is_prosumer(aid) else demand
 
             # Chip in contracts
             if self.use_contracts and self.use_absolute_contracts:
-                load -= self.contracts[self.timestep][aid] 
+                # Ignore contract adjustment if all contracts are positive or all are negative
+                contract_values = [self.contracts[self.timestep][a] for a in self.agents]
+                if not (all(v > 0 for v in contract_values) or all(v < 0 for v in contract_values)):
+                    load -= self.contracts[self.timestep][aid]
 
             if soc_control >= 0:
                 
@@ -327,16 +347,20 @@ class EnergyTradingEnv(ParallelEnv):
         soc = self.state_vars[aid]["soc"]
 
         # Should be forecasted? How do we know beforehand?
-        load = self._get_load(aid)
+        demand, pv = self._get_load(aid, scaled=True)
 
         t = self.timestep/self.eps_len
 
-        obs = [load,
-               soc,
+        obs = [demand,
+               pv if self._is_prosumer(aid) else 0.0,
+               soc/self.es_capacity[1], # Assume min soc is 0
                self.ToU[self._timestep_to_ToU_period(self.timestep)],
                self.FiT,
                np.sin(2 * np.pi * t),
-               np.cos(2 * np.pi * t)]
+               np.cos(2 * np.pi * t),
+               int(self.is_weekend[self.day]),
+               int(self.is_summer[self.day]),
+               int(self.is_winter[self.day])]
         
         if self.use_contracts:
             obs.append(self.contracts[self.timestep % len(self.timemap)][aid])
@@ -352,30 +376,38 @@ class EnergyTradingEnv(ParallelEnv):
         global_state = [self.ToU[self._timestep_to_ToU_period(self.timestep)],
                         self.FiT,
                         np.sin(2 * np.pi * t),
-                        np.cos(2 * np.pi * t)]
+                        np.cos(2 * np.pi * t),
+                        int(self.is_weekend[self.day]),
+                        int(self.is_summer[self.day]),
+                        int(self.is_winter[self.day])]
         
         for aid in self.agents:
-            soc = self.state_vars[aid]["soc"]
-            load = self._get_load(aid)
-            global_state.extend([load, soc])
+            soc = self.state_vars[aid]["soc"]/self.es_capacity[1]  # Assume min soc is 0
+            demand, pv = self._get_load(aid, scaled=True)
+            global_state.extend([demand, pv if self._is_prosumer(aid) else 0.0, soc])
 
             if self.use_contracts:
                 global_state.append(self.contracts[self.timestep % len(self.timemap)][aid])
 
         return np.array(global_state, dtype=np.float32)
     
-    def _get_load(self, aid):
+    def _get_load(self, aid, scaled=False):
 
         aid = self.aid_mapping[aid]
 
         idx = self.day*24 + self.timestep
-        is_prosumer = self.data[aid]["prosumer"]
         
-        demand = self.data[aid]["demand"][idx]
-        pv = self.data[aid]["pv"][idx]
-        load = demand - pv if is_prosumer else demand
+        if not scaled:
+            demand = self.data[aid]["demand"][idx]
+            pv = self.data[aid]["pv"][idx]
+        else:
+            demand = self.data[aid]["demand_scaled"][idx]
+            pv = self.data[aid]["pv_scaled"][idx]
 
-        return load
+        return demand, pv
+    
+    def _is_prosumer(self, aid):
+        return self.data[self.aid_mapping[aid]]["prosumer"]
     
     def _gaussian_init(self, mean, bucket, v_min, v_max):
 
@@ -471,6 +503,7 @@ class EnergyTradingEnv(ParallelEnv):
         
         return values, grid_reliance
     
+    #TODO: Update for new critic
     @staticmethod
     def decode_actions_for_critic(obs, action, task_config):
 

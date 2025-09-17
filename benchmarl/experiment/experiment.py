@@ -590,9 +590,10 @@ class Experiment(CallbackNotifier):
                     save_folder = Path(os.getcwd())
 
         if self.config.restore_file is None:
-            self.name = generate_exp_name(
-                f"{self.algorithm_name}_{self.task_name}_{self.model_name}", ""
-            )
+            # self.name = generate_exp_name(
+            #     f"{self.algorithm_name}_{self.task_name}_{self.model_name}", ""
+            # )
+            self.name = f"seed_{self.seed}" # Temp, for convienience
             self.folder_name = save_folder / self.name
 
         else:
@@ -876,7 +877,7 @@ class Experiment(CallbackNotifier):
         if self.config.evaluation_static:
             seed_everything(self.seed)
             try:
-                self.test_env.set_seed(self.seed)
+                self.test_env.set_seed(42) # Temp fix for static eval
             except NotImplementedError:
                 warnings.warn(
                     "`experiment.evaluation_static` set to true but the environment does not allow to set seeds."

@@ -63,13 +63,16 @@ if __name__ == "__main__":
     experiment_config.loggers = ['csv'] # No WandB for now
     experiment_config.save_folder = 'results'
     experiment_config.checkpoint_interval = 8192
-    experiment_config.keep_checkpoints_num = 1
+    experiment_config.checkpoint_at_end = True
+    experiment_config.keep_checkpoints_num = None # Keep all checkpoints
+    experiment_config.log_individual_agents = True
     
     # Evaluation Config
     experiment_config.evaluation = True
     experiment_config.evaluation_static = True
+    experiment_config.evaluation_deterministic_actions = True
     experiment_config.evaluation_interval = 8192
-    experiment_config.evaluation_episodes = 128
+    experiment_config.evaluation_episodes = 256
 
     # Task Config
     task.config["data_path"] = "data/ausgrid/group_4.json"
@@ -90,15 +93,18 @@ if __name__ == "__main__":
     experiment_config.sampling_device = "cpu"
     experiment_config.buffer_device = "cpu"
     experiment_config.train_device = "cuda"
-    experiment_config.parallel_collection = True
+
+    # Crippled due to PettingZoo wrapper seeding issues
+    experiment_config.parallel_collection = False
+    experiment_config.on_policy_n_envs_per_worker = 1
+    
     experiment_config.off_policy_n_envs_per_worker = 8
-    experiment_config.on_policy_n_envs_per_worker = 8
 
     experiment = Experiment(task=task,
                             algorithm_config=algorithm_config,
                             model_config=model_config,
                             critic_model_config=critic_model_config,
-                            seed=42,
+                            seed=0,
                             config=experiment_config)
     
     experiment.run()

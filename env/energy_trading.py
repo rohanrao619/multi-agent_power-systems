@@ -6,8 +6,6 @@ import numpy as np
 import torch
 
 from gymnasium import spaces
-from gymnasium.utils import seeding
-
 from pettingzoo import ParallelEnv
 
 # Basic environment, inspired from https://doi.org/10.24963/ijcai.2021/401
@@ -136,9 +134,12 @@ class EnergyTradingEnv(ParallelEnv):
         pass
 
     def reset(self, seed=None, options=None):
+
+        if seed is not None:
+            self._np_random = np.random.default_rng(seed)
         
         self.timestep = 0
-        self.day = options.get("day") if options is not None and "day" in options else np.random.choice(self.train_days)
+        self.day = options.get("day") if options is not None and "day" in options else self._np_random.choice(self.train_days)
 
         self.agents = self.possible_agents.copy()
 
@@ -164,17 +165,17 @@ class EnergyTradingEnv(ParallelEnv):
                     for aid in self.agents:
                         if self.use_absolute_contracts:
                             # Bit crude, 0 centered Gaussian also possible?
-                            self.contracts[t][aid] = np.random.uniform(-self.max_contract_qnt, self.max_contract_qnt)
+                            self.contracts[t][aid] = self._np_random.uniform(-self.max_contract_qnt, self.max_contract_qnt)
                             
                             # # Better exploration maybe? Ensure consumers buy, prosumers sell
                             # if "prosumer" in aid:
-                            #     self.contracts[t][aid] = np.random.uniform(-self.max_contract_qnt, 0)
+                            #     self.contracts[t][aid] = self._np_random.uniform(-self.max_contract_qnt, 0)
                             # else:
-                            #     self.contracts[t][aid] = np.random.uniform(0, self.max_contract_qnt)
+                            #     self.contracts[t][aid] = self._np_random.uniform(0, self.max_contract_qnt)
                         
                         else:
                             # Relative to load, commit percentage of expected load
-                            self.contracts[t][aid] = np.random.uniform(0, 1)
+                            self.contracts[t][aid] = self._np_random.uniform(0, 1)
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         infos = {aid: {"grid_reliance": 0.0,
@@ -412,7 +413,7 @@ class EnergyTradingEnv(ParallelEnv):
     def _gaussian_init(self, mean, bucket, v_min, v_max):
 
         # Gaussian (99.7%) on the bucket [mean-bucket/2, mean + bucket/2], clipped appropriately
-        return np.clip(np.random.normal(mean, bucket/6), max(v_min, mean - bucket/2), min(v_max, mean + bucket/2))
+        return np.clip(self._np_random.normal(mean, bucket/6), max(v_min, mean - bucket/2), min(v_max, mean + bucket/2))
     
     def _run_double_auction(self, quotes):
        

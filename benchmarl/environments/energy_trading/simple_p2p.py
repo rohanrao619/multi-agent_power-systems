@@ -22,3 +22,4 @@ class TaskConfig:
     max_contract_qnt: float = MISSING
     use_double_auction: bool = MISSING
     use_pooling: bool = MISSING
+    use_grid_only: bool = MISSING

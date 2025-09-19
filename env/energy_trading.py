@@ -74,9 +74,13 @@ class EnergyTradingEnv(ParallelEnv):
         # Clearing Mechanisms
         self.use_double_auction = config.get("use_double_auction", True)
         self.use_pooling = config.get("use_pooling", False)
+        self.use_grid_only = config.get("use_grid_only", False)  # Baseline
 
-        # Double auction takes priority, if both are true, DA first then pool
-        assert self.use_double_auction or self.use_pooling, "At least one clearing mechanism must be used!"
+        if self.use_grid_only:
+            assert (not self.use_double_auction) and (not self.use_pooling) and (not self.use_contracts), "Grid only mode cannot use DA or Pooling or Contracts!"
+        else:
+            # Double auction takes priority, if both are true, DA first then pool
+            assert self.use_double_auction or self.use_pooling, "At least one clearing mechanism must be used!"
     
     def _setup_agents(self):
 
@@ -235,6 +239,19 @@ class EnergyTradingEnv(ParallelEnv):
             # Ensure SOC is within bounds
             self.state_vars[aid]["soc"] = np.clip(self.state_vars[aid]["soc"], self.es_capacity[0], self.es_capacity[1])
 
+        # Grid Only (no P2P market)
+        if self.use_grid_only:
+            for aid in self.agents:
+                qnt = total_load[aid]
+                
+                # Direct settlement with grid
+                if qnt >= 0:
+                    rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
+                else:
+                    rewards[aid] -= qnt * self.FiT
+                
+                self.state_vars[aid]["grid_reliance"] += abs(qnt)
+
         # Run the double auction
         if self.use_double_auction:
 
@@ -288,7 +305,7 @@ class EnergyTradingEnv(ParallelEnv):
                     pool_qnts[aid] = -qnt
         
         # Direct pooling (skip DA)
-        else:
+        elif self.use_pooling: # Changed to elif for grid only support
             pool_qnts = dict()
             for aid in self.agents:
                 qnt = total_load[aid]

@@ -3,7 +3,7 @@ sys.path.append(".")  # Adjust the path to import "local" benchmarl
 
 import torch
 
-from benchmarl.algorithms import MaddpgConfig, MappoConfig
+from benchmarl.algorithms import MaddpgConfig, MappoConfig, IppoConfig
 from benchmarl.environments import EnergyTradingTask, ContractProposalTask
 from benchmarl.experiment import Experiment, ExperimentConfig
 from benchmarl.models.mlp import MlpConfig
@@ -18,7 +18,7 @@ if __name__ == "__main__":
     # task.config["base_exp_path"] = "results/mappo_simple_p2p_mlp__82af9d50_25_09_04-22_30_47/checkpoints/checkpoint_524288.pt"
 
     # Modify as needed
-    algorithm_config = MappoConfig.get_from_yaml()
+    algorithm_config = IppoConfig.get_from_yaml()
     experiment_config = ExperimentConfig.get_from_yaml()
     model_config = MlpConfig.get_from_yaml()
     critic_model_config = MlpConfig.get_from_yaml()
@@ -61,7 +61,7 @@ if __name__ == "__main__":
     
     # Logging Config
     experiment_config.loggers = ['csv'] # No WandB for now
-    experiment_config.save_folder = 'results'
+    experiment_config.save_folder = 'results/grid/ippo'
     experiment_config.checkpoint_interval = 8192
     experiment_config.checkpoint_at_end = True
     experiment_config.keep_checkpoints_num = None # Keep all checkpoints
@@ -83,8 +83,9 @@ if __name__ == "__main__":
     task.config["es_efficiency"] = [0.95, 0.95]
     task.config["ToU"] = [0.15, 0.22, 0.44]
     task.config["FiT"] = 0.04
-    task.config["use_double_auction"] = True
+    task.config["use_double_auction"] = False
     task.config["use_pooling"] = False
+    task.config["use_grid_only"] = True
     task.config["use_contracts"] = False
     task.config["use_absolute_contracts"] = False
     task.config["max_contract_qnt"] = 1.0

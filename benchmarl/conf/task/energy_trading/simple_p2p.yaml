@@ -15,3 +15,4 @@ use_absolute_contracts: False
 max_contract_qnt: 1.0
 use_double_auction: True
 use_pooling: False
+use_grid_only: False

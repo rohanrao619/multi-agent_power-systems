@@ -93,7 +93,7 @@ class ContractProposalClass(TaskClass):
         # If provided, must be a CompositeSpec with one "state" entry
         
         n_agents = len(env.group_map["agents"])
-        specs = Composite(state = Unbounded(shape=(4+n_agents*2,),
+        specs = Composite(state = Unbounded(shape=(7+n_agents*3,),
                                             dtype=torch.float32,
                                             device=env.device))
 

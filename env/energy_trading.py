@@ -90,6 +90,8 @@ class EnergyTradingEnv(ParallelEnv):
         # For better agent names
         self.aid_mapping = {}
 
+        #TODO: Should have sorted! Check for consistency.
+        # Checked, should be good for Python >= 3.7
         for aid in self.data.keys():
 
             if aid == "meta":
@@ -120,8 +122,8 @@ class EnergyTradingEnv(ParallelEnv):
             # Observation Space: [load, pv, soc, ToU, FiT, sin(t), cos(t), is_weekend, is_summer, is_winter]
             return spaces.Box(low=-32, high=32, shape=(10,), dtype=np.float32)
         else:
-            # Add contract: commited qnt
-            return spaces.Box(low=-32, high=32, shape=(11,), dtype=np.float32)
+            # Add own contract + mean and std of community contracts
+            return spaces.Box(low=-32, high=32, shape=(13,), dtype=np.float32)
     
     def action_space(self, agent):
         
@@ -141,6 +143,7 @@ class EnergyTradingEnv(ParallelEnv):
 
         if seed is not None:
             self._np_random = np.random.default_rng(seed)
+            self._np_random_contracts = np.random.default_rng(seed)  # Different RNG for contracts
         
         self.timestep = 0
         self.day = options.get("day") if options is not None and "day" in options else self._np_random.choice(self.train_days)
@@ -163,23 +166,23 @@ class EnergyTradingEnv(ParallelEnv):
                 self.contracts = options["contracts"]         
             else:
                 # Randomly generate contracts (better exploration possible?)
-                self.contracts = list(dict() for _ in range(len(self.timemap)))
+                self.contracts = list(dict() for _ in range(24))
 
-                for t in range(len(self.timemap)):
+                for t in range(24):
                     for aid in self.agents:
                         if self.use_absolute_contracts:
                             # Bit crude, 0 centered Gaussian also possible?
-                            self.contracts[t][aid] = self._np_random.uniform(-self.max_contract_qnt, self.max_contract_qnt)
+                            self.contracts[t][aid] = self._np_random_contracts.uniform(-self.max_contract_qnt, self.max_contract_qnt)
                             
                             # # Better exploration maybe? Ensure consumers buy, prosumers sell
                             # if "prosumer" in aid:
-                            #     self.contracts[t][aid] = self._np_random.uniform(-self.max_contract_qnt, 0)
+                            #     self.contracts[t][aid] = self._np_random_contracts.uniform(-self.max_contract_qnt, 0)
                             # else:
-                            #     self.contracts[t][aid] = self._np_random.uniform(0, self.max_contract_qnt)
+                            #     self.contracts[t][aid] = self._np_random_contracts.uniform(0, self.max_contract_qnt)
                         
                         else:
                             # Relative to load, commit percentage of expected load
-                            self.contracts[t][aid] = self._np_random.uniform(0, 1)
+                            self.contracts[t][aid] = self._np_random_contracts.uniform(0, 1)
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         infos = {aid: {"grid_reliance": 0.0,
@@ -381,7 +384,14 @@ class EnergyTradingEnv(ParallelEnv):
                int(self.is_winter[self.day])]
         
         if self.use_contracts:
-            obs.append(self.contracts[self.timestep % len(self.timemap)][aid])
+
+             # Own contract
+            obs.append(self.contracts[self.timestep % 24][aid])
+
+            # Add community contract stats
+            kappa = np.array([self.contracts[self.timestep % 24][agent] for agent in self.agents])
+            obs.append(kappa.mean())
+            obs.append(kappa.std())
 
         return np.array(obs, dtype=np.float32)
     
@@ -404,8 +414,9 @@ class EnergyTradingEnv(ParallelEnv):
             demand, pv = self._get_load(aid, scaled=True)
             global_state.extend([demand, pv if self._is_prosumer(aid) else 0.0, soc])
 
+            # All contracts for the Critic
             if self.use_contracts:
-                global_state.append(self.contracts[self.timestep % len(self.timemap)][aid])
+                global_state.append(self.contracts[self.timestep % 24][aid])
 
         return np.array(global_state, dtype=np.float32)
     

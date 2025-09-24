@@ -43,8 +43,10 @@ class ContractProposalEnv(ParallelEnv):
     def observation_space(self, agent):
         
         # Same for all
-        # Observation Space: Just sin(t), cos(t), and optionally max_contract_qnt, going in Bandit style
-        return spaces.Box(low=-32, high=32, shape=(3 if self.use_absolute_contracts else 2,), dtype=np.float32)
+        # Going in Bandit Style
+        # Observation Space: [ToU, FiT, sin(t), cos(t), is_weekend, is_summer, is_winter]
+        # Optionally add max_contract_qnt
+        return spaces.Box(low=-32, high=32, shape=(7 if not self.use_absolute_contracts else 8,), dtype=np.float32)
     
     def action_space(self, agent):
         
@@ -59,16 +61,13 @@ class ContractProposalEnv(ParallelEnv):
 
     def reset(self, seed=None, options=None):
 
-        if seed is not None:
-            self.np_random, self.np_random_seed = seeding.np_random(seed)
-
+        # Reset base environment, everything runs through it
+        self.base_obs, _ = self.trading_env.reset(options=options,
+                                                  seed = seed) # Seeding happens only once
+        
+        self.day = self.trading_env.day  # Sync days
         self.timestep = 0
-        self.day = np.random.randint(0, self.trading_env.n_days-1)
-
         self.agents = self.possible_agents.copy()
-
-        # Reset base environment
-        self.base_obs, _ = self.trading_env.reset(options={"day": self.day})
 
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         infos = {aid: {} for aid in self.agents}
@@ -79,8 +78,13 @@ class ContractProposalEnv(ParallelEnv):
 
         t = self.timestep/self.eps_len
 
-        obs = [np.sin(2 * np.pi * t),
-               np.cos(2 * np.pi * t)]
+        obs = [self.trading_env.ToU[self.trading_env._timestep_to_ToU_period(self.timestep)],
+               self.trading_env.FiT,
+               np.sin(2 * np.pi * t),
+               np.cos(2 * np.pi * t),
+               int(self.trading_env.is_weekend[self.day]),
+               int(self.trading_env.is_summer[self.day]),
+               int(self.trading_env.is_winter[self.day])]
         
         if self.use_absolute_contracts:
             obs.append(self.max_contract_qnt)
@@ -92,23 +96,25 @@ class ContractProposalEnv(ParallelEnv):
 
         t = self.timestep/self.eps_len
 
-        global_state = [np.sin(2 * np.pi * t),
+        global_state = [self.trading_env.ToU[self.trading_env._timestep_to_ToU_period(self.timestep)],
+                        self.trading_env.FiT,
+                        np.sin(2 * np.pi * t),
                         np.cos(2 * np.pi * t),
-                        self.trading_env.ToU[self.trading_env._timestep_to_ToU_period(self.timestep)],
-                        self.trading_env.FiT]
+                        int(self.trading_env.is_weekend[self.day]),
+                        int(self.trading_env.is_summer[self.day]),
+                        int(self.trading_env.is_winter[self.day])]
         
         for aid in self.agents:
-            soc = self.trading_env.state_vars[aid]["soc"]
-            load = self.trading_env._get_load(aid)
-
-            global_state.extend([load, soc])
+            soc = self.trading_env.state_vars[aid]["soc"]/self.trading_env.es_capacity[1]  # Assume min soc is 0
+            demand, pv = self.trading_env._get_load(aid, scaled=True)
+            global_state.extend([demand, pv if self.trading_env._is_prosumer(aid) else 0.0, soc])
 
         return np.array(global_state, dtype=np.float32)
     
     # Apply base policy to trade, assuming single group
     def _trade_forward(self, obs):
 
-        stacked_obs = Tensor([obs[aid] for aid in self.group_map['agents']])
+        stacked_obs = Tensor(np.array([obs[aid] for aid in self.group_map['agents']], dtype=np.float32))
         obs_tdict = TensorDict(agents=TensorDict(observation=stacked_obs)).to(self.base_policy.device)
 
         actions = self.base_policy.forward(obs_tdict)['agents']['action'].detach().cpu().numpy()

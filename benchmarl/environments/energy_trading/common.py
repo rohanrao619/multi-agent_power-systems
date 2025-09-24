@@ -92,8 +92,10 @@ class EnergyTradingClass(TaskClass):
         # A spec for the state.
         # If provided, must be a CompositeSpec with one "state" entry
         
-        #TODO: Hardcoded for now, fix later
-        specs = Composite(state = Unbounded(shape=(31,),
+        n_agents = len(env.group_map["agents"])
+        x_agent_features = 4 if self.config["use_contracts"] else 3
+        
+        specs = Composite(state = Unbounded(shape=(7+n_agents*x_agent_features,),
                                             dtype=torch.float32,
                                             device=env.device))
 

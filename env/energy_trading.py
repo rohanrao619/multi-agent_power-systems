@@ -153,12 +153,9 @@ class EnergyTradingEnv(ParallelEnv):
         self.state_vars = {
             aid: {
                 "soc": options.get("soc")[aid] if (options is not None and "soc" in options) else
-                self._gaussian_init(self.es_capacity[0] + (self.es_capacity[1] - self.es_capacity[0]) / 2,
+                self._gaussian_init((self.es_capacity[0] + self.es_capacity[1]) / 2,
                                     self.es_capacity[1] - self.es_capacity[0],
-                                    self.es_capacity[0], self.es_capacity[1]),
-                "grid_reliance": 0.0,
-                "p2p_participation": 0.0
-            } for aid in self.agents}
+                                    self.es_capacity[0], self.es_capacity[1])} for aid in self.agents}
 
         if self.use_contracts:
 
@@ -185,9 +182,12 @@ class EnergyTradingEnv(ParallelEnv):
                             self.contracts[t][aid] = self._np_random_contracts.uniform(0, 1)
         
         obs = {aid: self._get_obs(aid) for aid in self.agents}
-        infos = {aid: {"grid_reliance": 0.0,
-                       "p2p_participation": 0.0,
-                       "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
+        infos = {aid: {"qnt": 0.0, # quantity submitted to market
+                       "da_grid_qnt": 0.0, # quantity traded in DA with grid
+                       "da_p2p_qnt": 0.0, # quantity traded in DA with peers
+                       "mix_pool_qnt": 0.0, # quantity settled via Contracts in MIX
+                       "es_charge": 0.0, # ES charge/discharge
+                       } for aid in self.agents}
 
         return obs, infos
     
@@ -196,6 +196,14 @@ class EnergyTradingEnv(ParallelEnv):
         # Rewards
         rewards = {aid: 0.0 for aid in self.agents}
 
+        # Initialize info dict
+        infos = {aid: {"qnt": 0.0, # quantity submitted to market
+                       "da_grid_qnt": 0.0, # quantity traded in DA with grid
+                       "da_p2p_qnt": 0.0, # quantity traded in DA with peers
+                       "mix_pool_qnt": 0.0, # quantity settled via Contracts in MIX
+                       "es_charge": 0.0, # ES charge/discharge
+                       } for aid in self.agents}
+
         # Total load, including ES actions
         total_load = dict()
 
@@ -203,11 +211,9 @@ class EnergyTradingEnv(ParallelEnv):
         for aid, action in action_dict.items():
 
             if self.use_double_auction:
-                price, soc_control = action
-                price = self.FiT + price * (self.ToU[self._timestep_to_ToU_period(self.timestep)] - self.FiT)  # Scale Price
+                _, soc_control = action
             else:
                 soc_control = action[0]
-                price = 0.5 # Dummy price for pooling, unused
 
             soc = self.state_vars[aid]["soc"]
             
@@ -230,6 +236,9 @@ class EnergyTradingEnv(ParallelEnv):
                 total_load[aid] = load + charge_P * self.dt
                 self.state_vars[aid]["soc"] = soc + charge_P * self.dt * self.es_efficiency[0]
 
+                # Charge amount
+                infos[aid]["es_charge"] = charge_P * self.dt * self.es_efficiency[0]
+
             else:
 
                 # Discharging
@@ -239,8 +248,14 @@ class EnergyTradingEnv(ParallelEnv):
                 total_load[aid] = load + discharge_P * self.dt
                 self.state_vars[aid]["soc"] = soc + (discharge_P * self.dt)/self.es_efficiency[1]
 
+                # Discharge amount
+                infos[aid]["es_charge"] = (discharge_P * self.dt)/self.es_efficiency[1]
+
             # Ensure SOC is within bounds
             self.state_vars[aid]["soc"] = np.clip(self.state_vars[aid]["soc"], self.es_capacity[0], self.es_capacity[1])
+
+            # Update qnt info
+            infos[aid]["qnt"] = total_load[aid]
 
         # Grid Only (no P2P market)
         if self.use_grid_only:
@@ -252,15 +267,12 @@ class EnergyTradingEnv(ParallelEnv):
                     rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
                 else:
                     rewards[aid] -= qnt * self.FiT
-                
-                self.state_vars[aid]["grid_reliance"] += abs(qnt)
 
         # Run the double auction
         if self.use_double_auction:
 
             # DA quotes
-            if self.use_double_auction:
-                quotes = dict()
+            quotes = dict()
 
             # Prepare trade action
             for aid in self.agents:
@@ -269,6 +281,9 @@ class EnergyTradingEnv(ParallelEnv):
                 # Chip in contracts
                 if self.use_contracts and not self.use_absolute_contracts:
                     qnt *= (1 - self.contracts[self.timestep][aid])
+
+                price = action_dict[aid][0]
+                price = self.FiT + price * (self.ToU[self._timestep_to_ToU_period(self.timestep)] - self.FiT)  # Scale Price
                 
                 quotes[aid] = (qnt, price)
                 self.orderbook = quotes
@@ -279,9 +294,8 @@ class EnergyTradingEnv(ParallelEnv):
             for aid in self.agents:
                 rewards[aid] -= (trades[aid]["price"] * trades[aid]["qnt"])
             
-            # Update p2p participation based on local trades
-            for aid in self.agents:
-                self.state_vars[aid]["p2p_participation"] += abs(trades[aid]["qnt"])
+                # Update p2p participation based on local trades
+                infos[aid]["da_p2p_qnt"] = trades[aid]["qnt"]
             
             # Store unmet quotes for pooling
             if self.use_pooling:
@@ -293,7 +307,7 @@ class EnergyTradingEnv(ParallelEnv):
                 # Settle unmet quotes with ToU and FiT
                 if not self.use_pooling:
                     rewards[aid] -= qnt * self.ToU[self._timestep_to_ToU_period(self.timestep)]
-                    self.state_vars[aid]["grid_reliance"] += qnt
+                    infos[aid]["da_grid_qnt"] = qnt
                 else:
                     pool_qnts[aid] = qnt
 
@@ -303,7 +317,7 @@ class EnergyTradingEnv(ParallelEnv):
                 # Settle unmet quotes with ToU and FiT
                 if not self.use_pooling:
                     rewards[aid] += qnt * self.FiT
-                    self.state_vars[aid]["grid_reliance"] += qnt
+                    infos[aid]["da_grid_qnt"] = -qnt
                 else:
                     pool_qnts[aid] = -qnt
         
@@ -321,13 +335,10 @@ class EnergyTradingEnv(ParallelEnv):
 
         # Run Shapley Pooling
         if self.use_pooling:
-            shapley_values, grid_reliance = self._get_shapley_values(pool_qnts)
+            shapley_values = self._get_shapley_values(pool_qnts)
 
             for aid in self.agents:
                 rewards[aid] += shapley_values[aid]
-                
-                # Trick, not sure of individual contributions to grid reliance
-                self.state_vars[aid]["grid_reliance"] += (grid_reliance/len(self.agents))
 
         # Settle Contracts
         if self.use_contracts:
@@ -339,15 +350,14 @@ class EnergyTradingEnv(ParallelEnv):
                     qnt = self.contracts[self.timestep][aid]
                 else:
                     qnt = self.contracts[self.timestep][aid] * total_load[aid]
+                
                 contract_qnts[aid] = qnt
+                infos[aid]["mix_pool_qnt"] = qnt
             
-            shapley_values, grid_reliance = self._get_shapley_values(contract_qnts)
+            shapley_values = self._get_shapley_values(contract_qnts)
 
             for aid in self.agents:
                 rewards[aid] += shapley_values[aid]
-
-                # Trick, not sure of individual contributions to grid reliance
-                self.state_vars[aid]["grid_reliance"] += (grid_reliance/len(self.agents))
         
         # Time Controls
         self.timestep += 1
@@ -357,9 +367,6 @@ class EnergyTradingEnv(ParallelEnv):
         obs = {aid: self._get_obs(aid) for aid in self.agents}
         terminations = {aid: done for aid in self.agents}
         truncations = {aid: False for aid in self.agents}
-        infos = {aid: {"grid_reliance": self.state_vars[aid]["grid_reliance"],
-                       "p2p_participation": self.state_vars[aid]["p2p_participation"],
-                       "soc": self.state_vars[aid]["soc"]} for aid in self.agents}
         
         return obs, rewards, terminations, truncations, infos
     
@@ -527,10 +534,8 @@ class EnergyTradingEnv(ParallelEnv):
                 marginal_contribution = self._get_coalition_value(S | {p}, qnts, ToU) - self._get_coalition_value(S, qnts, ToU)
                 weight = (math.factorial(len(S)) * math.factorial(n - len(S) - 1)) / math.factorial(n)
                 values[p] += weight * marginal_contribution
-
-        grid_reliance = abs(sum(qnts[p] for p in self.agents))
         
-        return values, grid_reliance
+        return values
     
     #TODO: Update for new critic
     @staticmethod

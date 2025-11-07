@@ -15,7 +15,7 @@ if __name__ == "__main__":
 
     # Loads from "benchmarl/conf/task/contract_proposal/hourly_commits.yaml"
     task = ContractProposalTask.HOURLY_COMMITS.get_from_yaml()
-    task.config["base_exp_path"] = "results/mix/stage_1/mappo/seed_2/checkpoints/checkpoint_385024.pt"
+    task.config["base_exp_path"] = "results/mix/stage_1/mappo/seed_7/checkpoints/checkpoint_385024.pt"
 
     # Modify as needed
     algorithm_config = MappoConfig.get_from_yaml()
@@ -42,10 +42,10 @@ if __name__ == "__main__":
     # Algorithm Config, Off-Policy, MADDPG
     # algorithm_config.use_double_auction_critic = False # Only implemented for MADDPG, comment out for MAPPO
     # algorithm_config.exploration_type = 'gaussian' # Only implemented for MADDPG, comment out for MAPPO
-    experiment_config.off_policy_collected_frames_per_batch = 16384
-    experiment_config.off_policy_n_optimizer_steps = 256
+    experiment_config.off_policy_collected_frames_per_batch = 8192
+    experiment_config.off_policy_n_optimizer_steps = 128
     experiment_config.off_policy_train_batch_size = 256
-    experiment_config.off_policy_memory_size = 65536
+    experiment_config.off_policy_memory_size = 131072
     experiment_config.exploration_eps_init = 0.8
     experiment_config.exploration_eps_end = 0.1
     experiment_config.exploration_anneal_frames = 262144
@@ -98,14 +98,13 @@ if __name__ == "__main__":
     # Crippled due to PettingZoo wrapper seeding issues
     experiment_config.parallel_collection = False
     experiment_config.on_policy_n_envs_per_worker = 1
-    
-    experiment_config.off_policy_n_envs_per_worker = 8
+    experiment_config.off_policy_n_envs_per_worker = 1
 
     experiment = Experiment(task=task,
                             algorithm_config=algorithm_config,
                             model_config=model_config,
                             critic_model_config=critic_model_config,
-                            seed=10,
+                            seed=15,
                             config=experiment_config)
     
     experiment.run()

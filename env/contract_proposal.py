@@ -1,7 +1,6 @@
 import numpy as np
 
 from gymnasium import spaces
-from gymnasium.utils import seeding
 
 from pettingzoo import ParallelEnv
 from .energy_trading import EnergyTradingEnv

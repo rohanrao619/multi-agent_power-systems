@@ -29,6 +29,10 @@ class Maddpg(Algorithm):
             data collection.
         use_tanh_mapping (bool): if ``True``, use squash actions (output by the policy) into the action range, otherwise
             clip them.
+        
+        [Deprecated] use_double_auction_critic (bool): Whether to use a DA-MADDPG critic (see https://doi.org/10.24963/ijcai.2021/401).
+        exploration_type (str): Type of off-policy exploration to use. Can be either "eps_greedy" or "additive_gaussian".
+        
     """
 
     def __init__(
@@ -47,10 +51,10 @@ class Maddpg(Algorithm):
         self.delay_value = delay_value
         self.loss_function = loss_function
         self.use_tanh_mapping = use_tanh_mapping
-        self.exploration_type = exploration_type # "eps_greedy" or "additive_gaussian"
 
-        # customization
+        # Customization
         self.use_double_auction_critic = use_double_auction_critic
+        self.exploration_type = exploration_type # "eps_greedy" or "additive_gaussian"
 
     #############################
     # Overridden abstract methods
@@ -249,6 +253,9 @@ class Maddpg(Algorithm):
                 }
             )
 
+            # TODO: Fix this:
+            # - self.state_spec is not None (new implementation)
+            # - should be local observation + local action + quotes for all other agents
             if self.use_double_auction_critic:
                     
                 # Decode actions to quotes
@@ -269,7 +276,7 @@ class Maddpg(Algorithm):
                 input_spec=critic_input_spec,
                 output_spec=critic_output_spec,
                 n_agents=n_agents,
-                centralised=True,
+                centralised=True, # Flawed? Should've been False. # TODO: Check this.
                 input_has_agent_dim=input_has_agent_dim,
                 agent_group=group,
                 share_params=self.share_param_critic,

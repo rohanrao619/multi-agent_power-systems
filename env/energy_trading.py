@@ -80,6 +80,7 @@ class EnergyTradingEnv(ParallelEnv):
             assert (not self.use_double_auction) and (not self.use_pooling) and (not self.use_contracts), "Grid only mode cannot use DA or Pooling or Contracts!"
         else:
             # Double auction takes priority, if both are true, DA first then pool
+            # For MIX (Stage 1), set use_double_auction = True and use_pooling = False. And of course use_contracts = True.
             assert self.use_double_auction or self.use_pooling, "At least one clearing mechanism must be used!"
     
     def _setup_agents(self):
@@ -187,6 +188,8 @@ class EnergyTradingEnv(ParallelEnv):
                        "da_p2p_qnt": 0.0, # quantity traded in DA with peers
                        "mix_pool_qnt": 0.0, # quantity settled via Contracts in MIX
                        "es_charge": 0.0, # ES charge/discharge
+                       "avg_clearing_price": -1, # Average clearing price in DA, -1 if no trades [GLOBAL]
+                       "da_unmatched": False, # Whether unmatched trades in DA due to price [GLOBAL]
                        } for aid in self.agents}
 
         return obs, infos
@@ -202,6 +205,8 @@ class EnergyTradingEnv(ParallelEnv):
                        "da_p2p_qnt": 0.0, # quantity traded in DA with peers
                        "mix_pool_qnt": 0.0, # quantity settled via Contracts in MIX
                        "es_charge": 0.0, # ES charge/discharge
+                       "avg_clearing_price": -1, # Average clearing price in DA, -1 if no trades [GLOBAL]
+                       "da_unmatched": False, # Whether unmatched trades in DA due to price [GLOBAL]
                        } for aid in self.agents}
 
         # Total load, including ES actions
@@ -289,6 +294,18 @@ class EnergyTradingEnv(ParallelEnv):
                 self.orderbook = quotes
             
             matches, trades, open_book = self._run_double_auction(quotes)
+
+            # Get average clearing price
+            if len(matches) > 0:
+                avg_clearing_price = sum(match["price"] * match["qnt"] for match in matches) / sum(match["qnt"] for match in matches)
+                avg_clearing_price = (avg_clearing_price - self.FiT)/(self.ToU[self._timestep_to_ToU_period(self.timestep)] - self.FiT)
+                for aid in self.agents:
+                    infos[aid]["avg_clearing_price"] = avg_clearing_price
+
+            # Mark if there were unmatched quotes due to pricing
+            if len(open_book["buyers"]) > 0 and len(open_book["sellers"]) > 0:
+                for aid in self.agents:
+                    infos[aid]["da_unmatched"] = True
 
             # Costs/Earnings from successful trades
             for aid in self.agents:
@@ -537,7 +554,8 @@ class EnergyTradingEnv(ParallelEnv):
         
         return values
     
-    #TODO: Update for new critic
+    # Not functional anymore!
+    #TODO: Update for the new Observation Space
     @staticmethod
     def decode_actions_for_critic(obs, action, task_config):
 

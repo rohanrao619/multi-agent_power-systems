@@ -151,7 +151,7 @@ class Logger:
             if "info" in batch.get(("next", group)).keys():
                 to_log.update(
                     {
-                        f"collection/{group}/info/{key}": value.to(torch.float).mean(dim=-1, keepdim=True)[gobal_done]
+                        f"collection/{group}/info/{key}": value.to(torch.float)
                         .mean()
                         .item()
                         for key, value in batch.get(("next", group, "info")).items()

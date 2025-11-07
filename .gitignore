@@ -1,5 +1,6 @@
 .vscode/
 **/__pycache__/
 results/
+thesis_results/plots/
 data/ausgrid/solar.csv
 data/ausgrid/*.json
